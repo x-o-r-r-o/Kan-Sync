@@ -1,6 +1,7 @@
-/* Kan Sync v0.5.1 — plugin for Kan.bn
+/* Kan Sync v0.5.2 — plugin for Kan.bn
  * https://github.com/x-o-r-r-o/
  *
+ * v0.5.2: README disclosures; release with artifact attestations.
  * v0.5.1: Fix community manifest description (remove banned word).
  * v0.5.0: @person member sync, card detail modal (description, checklists,
  * attachments, comments, activity), multi-workspace switcher in board view.
