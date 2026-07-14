@@ -275,15 +275,6 @@ Errors are also logged to the developer console (`Ctrl/Cmd + Shift + I`).
 
 **Roadmap complete** as of v0.5.0 — new ideas welcome via issues.
 
-## Publishing to the Community Plugin Store
-
-Everything code-side is ready (`manifest.json`, `versions.json`, no build step). To submit:
-
-1. Push this folder to `github.com/x-o-r-r-o/kan-sync` (repo name should match the plugin ID)
-2. Create a GitHub release tagged `0.5.0` with `manifest.json`, `main.js`, and `styles.css` attached as release assets
-3. Fork [obsidianmd/obsidian-releases](https://github.com/obsidianmd/obsidian-releases), add an entry to `community-plugins.json`, and open a PR
-4. Address review feedback (typical turnaround: a few weeks)
-
 ## Changelog
 
 ### 0.5.0
