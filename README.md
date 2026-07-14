@@ -17,6 +17,7 @@
 - [Commands](#commands)
 - [Usage Guide](#usage-guide)
 - [Sync Conventions](#sync-conventions)
+- [Disclosures](#disclosures)
 - [Data & Privacy](#data--privacy)
 - [API Endpoints Used](#api-endpoints-used)
 - [Troubleshooting](#troubleshooting)
@@ -194,6 +195,16 @@ Run **Pull Kan board status into active note**:
 - **One board per note.** Big projects = one note with phases as headings, or several notes each mapped via `kan_board`.
 - **Labels attach at card creation.** Adding a tag to an already-synced item does not retro-label the card (planned).
 
+## Disclosures
+
+Per [Obsidian developer policies](https://docs.obsidian.md/Developer+policies):
+
+- **Account required.** A [Kan.bn](https://kan.bn) (or self-hosted Kan) account and API key are required for the plugin to work.
+- **Network use.** The plugin sends HTTPS requests to your configured Kan API base URL (default `https://kan.bn/api/v1`) to sync boards, lists, cards, comments, members, and attachments. Board data is never duplicated into a local Kan database; the plugin is an API client.
+- **Attachment uploads.** When you attach a file to a card, the plugin requests a presigned upload URL from Kan, then uploads the file bytes to that URL (Kan-managed object storage, typically S3-compatible). The upload request does not include your Kan API key.
+- **No telemetry.** The plugin does not phone home, collect analytics, or contact any service other than your configured Kan API and Kan-issued upload URLs.
+- **Vault access.** The plugin reads and writes notes in your vault (checklists, ID markers, status tables) via the Obsidian API. It does not access files outside the vault.
+
 ## Data & Privacy
 
 | Data | Where it lives |
@@ -201,8 +212,7 @@ Run **Pull Kan board status into active note**:
 | Boards, lists, cards | Kan's servers (or your self-hosted instance) — never mirrored locally |
 | API key, workspace ID, settings | `<vault>/.obsidian/plugins/kan-sync/data.json` (plaintext, local) |
 | Status snapshots | Only in notes where you explicitly run Pull |
-
-The plugin makes HTTPS requests exclusively to `kan.bn` (or your configured instance). No telemetry, no third parties.
+| Attachment file bytes | Uploaded to Kan-issued presigned storage URLs when you attach files |
 
 > ⚠️ If you sync your vault (Obsidian Sync, iCloud, git), `data.json` — including your API key — syncs with it. Add it to `.gitignore` for public repos.
 
@@ -272,6 +282,18 @@ Errors are also logged to the developer console (`Ctrl/Cmd + Shift + I`).
 - [x] ~~Member/assignee sync (`@person` syntax)~~ — v0.5.0
 - [x] ~~Card detail modal (description, comments, activity) in board view~~ — v0.5.0
 - [x] ~~Multi-workspace switcher in board view~~ — v0.5.0
+- [ ] Community plugin store submission (repo prepared — see below; requires a GitHub release, done outside the plugin)
+
+**Roadmap complete** as of v0.5.0 — new ideas welcome via issues.
+
+## Publishing to the Community Plugin Store
+
+Everything code-side is ready (`manifest.json`, `versions.json`, no build step). To submit:
+
+1. Push this folder to `github.com/x-o-r-r-o/kan-sync` (repo name should match the plugin ID)
+2. Create a GitHub release tagged `0.5.0` with `manifest.json`, `main.js`, and `styles.css` attached as release assets
+3. Fork [obsidianmd/obsidian-releases](https://github.com/obsidianmd/obsidian-releases), add an entry to `community-plugins.json`, and open a PR
+4. Address review feedback (typical turnaround: a few weeks)
 
 ## Changelog
 
