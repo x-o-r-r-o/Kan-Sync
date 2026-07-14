@@ -272,7 +272,6 @@ Errors are also logged to the developer console (`Ctrl/Cmd + Shift + I`).
 - [x] ~~Member/assignee sync (`@person` syntax)~~ — v0.5.0
 - [x] ~~Card detail modal (description, comments, activity) in board view~~ — v0.5.0
 - [x] ~~Multi-workspace switcher in board view~~ — v0.5.0
-- [ ] Community plugin store submission (repo prepared — see below; requires a GitHub release, done outside the plugin)
 
 **Roadmap complete** as of v0.5.0 — new ideas welcome via issues.
 
