@@ -1,0 +1,36 @@
+.kan-view { display: flex; flex-direction: column; height: 100%; }
+.kan-header { display: flex; gap: 6px; padding: 6px; align-items: center; }
+.kan-select { flex: 1; }
+.kan-refresh { cursor: pointer; }
+.kan-body { flex: 1; overflow: auto; padding: 6px; }
+.kan-columns { display: flex; gap: 8px; align-items: flex-start; }
+.kan-col {
+  background: var(--background-secondary);
+  border-radius: 8px;
+  padding: 8px;
+  min-width: 180px;
+  max-width: 240px;
+  flex-shrink: 0;
+}
+.kan-col-title { font-weight: 600; font-size: 0.85em; margin-bottom: 8px; }
+.kan-card {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+.kan-card { cursor: grab; }
+.kan-card.kan-dragging { opacity: 0.5; }
+.kan-col.kan-drop-target { outline: 2px dashed var(--interactive-accent); outline-offset: -2px; }
+.kan-card-title { font-size: 0.85em; }
+.kan-card-due { font-size: 0.75em; color: var(--text-muted); margin-top: 2px; }
+.kan-card-labels { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+.kan-label {
+  font-size: 0.7em;
+  background: var(--background-modifier-hover);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.kan-suggest-sub { font-size: 0.8em; color: var(--text-muted); }
+.kan-comment-input { width: 100%; margin: 8px 0; }
