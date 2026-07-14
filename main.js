@@ -1,8 +1,8 @@
-/* Kan Sync v0.4.0 — Obsidian plugin for Kan.bn
+/* Kan Sync v0.5.0 — Obsidian plugin for Kan.bn
  * https://github.com/x-o-r-r-o/
  *
- * v0.4.0: two-way sub-item completion (PATCH checklist items),
- * file + note attachments on cards (presigned S3 upload), 📎 badges.
+ * v0.5.0: @person member sync, card detail modal (description, checklists,
+ * attachments, comments, activity), multi-workspace switcher in board view.
  */
 
 const { Plugin, ItemView, PluginSettingTab, Setting, Notice, requestUrl, Modal, SuggestModal } = require("obsidian");
@@ -11,6 +11,7 @@ const VIEW_TYPE_KAN = "kan-board-view";
 const MARKER_RE = /\s*%%kan:([\w-]+)%%/;
 const DUE_RE = /(?:📅|@due\()\s*(\d{4}-\d{2}-\d{2})\)?/u;
 const TAG_RE = /(^|\s)#([\w/-]+)/g;
+const MENTION_RE = /(^|\s)@([\w.-]+)/g;
 const LABEL_COLOURS = ["#e74c3c", "#e67e22", "#f1c40f", "#2ecc71", "#1abc9c", "#3498db", "#9b59b6", "#34495e"];
 
 const DEFAULT_SETTINGS = {
@@ -28,6 +29,7 @@ const DEFAULT_SETTINGS = {
   moveDoneCards: true,
   includeTitlesInStatus: true,
   syncSubtasks: true,
+  syncMembers: true,
 };
 
 /* ---------------- API client ---------------- */
@@ -88,6 +90,9 @@ class KanClient {
     return this.req("GET", `/workspaces/${wsId}/search?query=${encodeURIComponent(query.slice(0, 100))}&limit=${limit || 20}`);
   }
   updateChecklistItem(itemId, patch) { return this.req("PATCH", `/checklists/items/${itemId}`, patch); }
+  getCard(cardId) { return this.req("GET", `/cards/${cardId}`); }
+  toggleCardMember(cardId, memberId) { return this.req("PUT", `/cards/${cardId}/members/${memberId}`); }
+  getCardActivities(cardId, limit) { return this.req("GET", `/cards/${cardId}/activities?limit=${limit || 20}`); }
   getAttachmentUploadUrl(cardId, filename, contentType, size) {
     return this.req("POST", `/cards/${cardId}/attachments/upload-url`, { filename: filename.slice(0, 255), contentType, size });
   }
@@ -112,6 +117,7 @@ function cleanText(s) {
     .replace(MARKER_RE, "")
     .replace(DUE_RE, "")
     .replace(TAG_RE, " ")
+    .replace(MENTION_RE, " ")
     .replace(/\*\*(.+?)\*\*/g, "$1")
     .replace(/\[\[([^\]|]+)\|?([^\]]*)\]\]/g, (m, a, b) => b || a)
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
@@ -159,11 +165,14 @@ function parseNote(content, defaultListName) {
     let t;
     const tagRe = new RegExp(TAG_RE.source, "g");
     while ((t = tagRe.exec(rest)) !== null) tags.push(t[2]);
+    const mentions = [];
+    const menRe = new RegExp(MENTION_RE.source, "g");
+    while ((t = menRe.exec(rest)) !== null) mentions.push(t[2]);
     const title = cleanText(rest);
     if (!title) return;
 
     if (indent === 0) {
-      lastTopItem = { done: m[2] !== " ", title, kanId, due, tags, lineNo, children: [] };
+      lastTopItem = { done: m[2] !== " ", title, kanId, due, tags, mentions, lineNo, children: [] };
       current.items.push(lastTopItem);
     } else if (lastTopItem) {
       lastTopItem.children.push({ done: m[2] !== " ", title, lineNo });
@@ -230,6 +239,103 @@ class KanCommentModal extends Modal {
   onClose() { this.contentEl.empty(); }
 }
 
+/* ---------------- card detail modal ---------------- */
+
+class KanCardModal extends Modal {
+  constructor(app, plugin, cardId) {
+    super(app);
+    this.plugin = plugin;
+    this.cardId = cardId;
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("kan-card-modal");
+    contentEl.setText("Loading card…");
+    let card;
+    try { card = await this.plugin.client.getCard(this.cardId); }
+    catch (e) { contentEl.setText("Error: " + e.message); return; }
+    contentEl.empty();
+
+    // header
+    const prefix = card.list?.board?.workspace?.cardPrefix;
+    contentEl.createEl("h3", { text: (prefix && card.cardNumber ? `${prefix}-${card.cardNumber} · ` : "") + card.title });
+    const meta = contentEl.createDiv({ cls: "kan-modal-meta" });
+    meta.createSpan({ text: `📁 ${card.list?.board?.name || ""} → ${card.list?.name || ""}` });
+    if (card.dueDate) meta.createSpan({ text: `  ·  📅 ${String(card.dueDate).slice(0, 10)}` });
+
+    if ((card.labels || []).length) {
+      const lbls = contentEl.createDiv({ cls: "kan-card-labels" });
+      for (const l of card.labels) {
+        const span = lbls.createSpan({ cls: "kan-label", text: l.name });
+        if (l.colourCode) span.style.background = l.colourCode + "33";
+      }
+    }
+
+    if ((card.members || []).length) {
+      contentEl.createDiv({ cls: "kan-modal-section", text: "👤 " + card.members.map((m) => (m.user && m.user.name) || m.email).join(", ") });
+    }
+
+    if (card.description) {
+      contentEl.createEl("h5", { text: "Description" });
+      contentEl.createDiv({ cls: "kan-modal-desc", text: card.description });
+    }
+
+    for (const cl of card.checklists || []) {
+      const total = (cl.items || []).length;
+      const done = (cl.items || []).filter((i) => i.completed).length;
+      contentEl.createEl("h5", { text: `${cl.name} (${done}/${total})` });
+      const ul = contentEl.createEl("ul", { cls: "kan-modal-checklist" });
+      for (const it of cl.items || []) ul.createEl("li", { text: (it.completed ? "☑ " : "☐ ") + it.title });
+    }
+
+    if ((card.attachments || []).length) {
+      contentEl.createEl("h5", { text: "Attachments" });
+      const ul = contentEl.createEl("ul", { cls: "kan-modal-checklist" });
+      for (const a of card.attachments) {
+        const li = ul.createEl("li");
+        const name = a.originalFilename || a.s3Key;
+        if (a.url) li.createEl("a", { text: "📎 " + name, href: a.url });
+        else li.setText("📎 " + name);
+      }
+    }
+
+    // comments + activity
+    const acts = card.activities || [];
+    contentEl.createEl("h5", { text: "Activity" });
+    const feed = contentEl.createDiv({ cls: "kan-modal-activity" });
+    if (!acts.length) feed.setText("No activity.");
+    for (const a of acts.slice(-15).reverse()) {
+      const when = String(a.createdAt).slice(0, 16).replace("T", " ");
+      const who = (a.user && (a.user.name || a.user.email)) || "";
+      let what = a.type;
+      if (a.comment && a.comment.comment) what = `💬 ${a.comment.comment}`;
+      else if (a.fromList && a.toList) what = `moved ${a.fromList.name} → ${a.toList.name}`;
+      else if (a.toTitle && a.fromTitle) what = `renamed "${a.fromTitle}" → "${a.toTitle}"`;
+      else if (a.label) what = `label: ${a.label.name}`;
+      else if (a.member) what = `member: ${(a.member.user && a.member.user.name) || ""}`;
+      feed.createDiv({ cls: "kan-activity-row", text: `${when} ${who ? "· " + who + " " : ""}· ${what}` });
+    }
+
+    // add comment
+    const ta = contentEl.createEl("textarea", { cls: "kan-comment-input" });
+    ta.rows = 2;
+    ta.placeholder = "Write a comment…";
+    const btn = contentEl.createEl("button", { text: "Comment", cls: "mod-cta" });
+    btn.onclick = async () => {
+      const text = ta.value.trim();
+      if (!text) return;
+      try {
+        await this.plugin.client.addComment(this.cardId, text);
+        new Notice("Comment added.");
+        this.onOpen(); // re-render
+      } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+    };
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
 /* ---------------- board view ---------------- */
 
 class KanBoardView extends ItemView {
@@ -252,10 +358,30 @@ class KanBoardView extends ItemView {
     el.addClass("kan-view");
 
     const header = el.createDiv({ cls: "kan-header" });
+    const wsSelect = header.createEl("select", { cls: "kan-select kan-ws-select", attr: { "aria-label": "Workspace" } });
     const select = header.createEl("select", { cls: "kan-select" });
     const searchBtn = header.createEl("button", { text: "🔍", cls: "kan-refresh", attr: { "aria-label": "Search" } });
     const refreshBtn = header.createEl("button", { text: "↻", cls: "kan-refresh", attr: { "aria-label": "Refresh" } });
     const body = el.createDiv({ cls: "kan-body" });
+
+    const loadWorkspaces = async () => {
+      try {
+        const wss = await this.plugin.client.getWorkspaces();
+        wsSelect.empty();
+        for (const w of wss) {
+          const opt = wsSelect.createEl("option", { text: w.name || w.publicId });
+          opt.value = w.publicId;
+        }
+        if (this.plugin.settings.workspaceId) wsSelect.value = this.plugin.settings.workspaceId;
+        else if (wss.length) { this.plugin.settings.workspaceId = wss[0].publicId; await this.plugin.saveSettings(); }
+      } catch (e) { console.error(e); }
+    };
+    wsSelect.onchange = async () => {
+      this.plugin.settings.workspaceId = wsSelect.value;
+      await this.plugin.saveSettings();
+      this.selectedBoardId = null;
+      await loadBoards();
+    };
 
     const renderBoard = async () => {
       body.empty();
@@ -306,8 +432,12 @@ class KanBoardView extends ItemView {
             } catch (e) { new Notice("Kan error: " + e.message, 8000); }
           });
 
+          c.addEventListener("click", () => new KanCardModal(this.app, this.plugin, card.publicId).open());
+
           c.createDiv({ cls: "kan-card-title", text: card.title });
           if (card.dueDate) c.createDiv({ cls: "kan-card-due", text: "Due: " + String(card.dueDate).slice(0, 10) });
+          if ((card.members || []).length)
+            c.createDiv({ cls: "kan-card-due", text: "👤 " + card.members.map((m) => ((m.user && m.user.name) || m.email || "").split(" ")[0]).join(", ").slice(0, 40) });
           const checklists = card.checklists || [];
           if (checklists.length) {
             const total = checklists.reduce((n, cl) => n + (cl.items || []).length, 0);
@@ -345,9 +475,10 @@ class KanBoardView extends ItemView {
     };
 
     select.onchange = async () => { this.selectedBoardId = select.value; await renderBoard(); };
-    refreshBtn.onclick = loadBoards;
+    refreshBtn.onclick = async () => { await loadWorkspaces(); await loadBoards(); };
     searchBtn.onclick = () => new KanSearchModal(this.app, this.plugin).open();
     this.reload = loadBoards;
+    await loadWorkspaces();
     await loadBoards();
   }
 }
@@ -492,6 +623,33 @@ class KanSyncPlugin extends Plugin {
     return { added, completed };
   }
 
+  resolveMention(mention, wsMembers) {
+    // match @handle against workspace member names and emails (first/whole name or email prefix)
+    const q = mention.toLowerCase().replace(/[._-]/g, " ");
+    for (const m of wsMembers || []) {
+      const name = ((m.user && m.user.name) || "").toLowerCase();
+      const email = (m.email || "").toLowerCase();
+      if (!name && !email) continue;
+      if (name === q || name.split(" ").includes(q) || name.replace(/\s+/g, "") === q.replace(/\s+/g, "")) return m;
+      if (email.split("@")[0] === mention.toLowerCase()) return m;
+    }
+    return null;
+  }
+
+  async syncMembersForCard(cardPublicId, currentMemberIds, mentions, wsMembers) {
+    // add-only: assign mentioned members the card doesn't have yet
+    let assigned = 0;
+    for (const mention of mentions) {
+      const member = this.resolveMention(mention, wsMembers);
+      if (!member) { console.warn(`Kan: no workspace member matches @${mention}`); continue; }
+      if (currentMemberIds.has(member.publicId)) continue;
+      await this.client.toggleCardMember(cardPublicId, member.publicId);
+      currentMemberIds.add(member.publicId);
+      assigned++;
+    }
+    return assigned;
+  }
+
   markerOnCursorLine(editor) {
     const line = editor.getLine(editor.getCursor().line);
     return (line.match(MARKER_RE) || [])[1] || null;
@@ -575,8 +733,9 @@ class KanSyncPlugin extends Plugin {
 
       const allTags = this.settings.syncTags ? [...new Set(sections.flatMap((s) => s.items.flatMap((i) => i.tags)))] : [];
       const labelMap = allTags.length ? await this.ensureLabels(board, allTags) : {};
+      const wsMembers = (board.workspace && board.workspace.members) || [];
 
-      let created = 0, updated = 0, adopted = 0, moved = 0, subAdded = 0, subCompleted = 0, labeled = 0;
+      let created = 0, updated = 0, adopted = 0, moved = 0, subAdded = 0, subCompleted = 0, labeled = 0, assigned = 0;
       const markers = [];
 
       for (const s of sections) {
@@ -602,6 +761,12 @@ class KanSyncPlugin extends Plugin {
                   labeled++;
                 }
               }
+            }
+
+            // @mentions → card members (add-only)
+            if (this.settings.syncMembers && item.mentions.length) {
+              const have = new Set((existing.members || []).map((m) => m.publicId));
+              assigned += await this.syncMembersForCard(existing.publicId, have, item.mentions, wsMembers);
             }
 
             // sub-items → card checklist (two-way completion: note done → Kan completed)
@@ -631,6 +796,9 @@ class KanSyncPlugin extends Plugin {
             subAdded += r.added;
             subCompleted += r.completed;
           }
+
+          if (this.settings.syncMembers && item.mentions.length && nc && nc.publicId)
+            assigned += await this.syncMembersForCard(nc.publicId, new Set(), item.mentions, wsMembers);
         }
       }
 
@@ -645,6 +813,7 @@ class KanSyncPlugin extends Plugin {
       if (subAdded) bits.push(`${subAdded} subtasks`);
       if (subCompleted) bits.push(`${subCompleted} subtasks completed`);
       if (labeled) bits.push(`${labeled} labels`);
+      if (assigned) bits.push(`${assigned} assigned`);
       new Notice(`Kan "${boardName}": ${bits.join(", ")}.`);
     } catch (e) {
       new Notice("Kan error: " + e.message, 8000);
@@ -810,6 +979,14 @@ class KanSettingTab extends PluginSettingTab {
       .addToggle((t) =>
         t.setValue(this.plugin.settings.retroLabel)
           .onChange(async (v) => { this.plugin.settings.retroLabel = v; await this.plugin.saveSettings(); })
+      );
+
+    new Setting(containerEl)
+      .setName("Sync @mentions as card members")
+      .setDesc("@name on an item assigns the matching workspace member (by name or email prefix) to its card. Add-only.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.syncMembers)
+          .onChange(async (v) => { this.plugin.settings.syncMembers = v; await this.plugin.saveSettings(); })
       );
 
     new Setting(containerEl)

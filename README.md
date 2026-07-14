@@ -4,7 +4,7 @@
 
 [Kan.bn](https://kan.bn) is the open-source alternative to Trello. This plugin turns any Obsidian note with checkboxes into a live kanban board and keeps the two in sync — without ever duplicating your board data locally.
 
-![Version](https://img.shields.io/badge/version-0.4.0-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-0.5.0-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -37,6 +37,9 @@
 - **🏷 #tags → labels** — tags on checklist items become Kan labels, auto-created with deterministic colours.
 - **☑️ Sub-items → card checklists (two-way)** — indented checkboxes under an item become a checklist on its card. Completion flows both ways: check a sub-item in the note and Kan's checklist item completes on push; complete it in Kan and the note checks off on pull.
 - **📎 Attachments** — attach any file (up to 50 MB) or the active note itself to a synced card, straight from the editor. Attachment counts show on cards in the board view.
+- **👤 @mentions → assignees** — write `@asim` on an item and the matching workspace member (by name or email prefix) is assigned to the card. Add-only.
+- **🗂 Card detail modal** — click any card in the board view: full description, labels, members, checklists with progress, attachment download links, activity feed (moves, renames, labels, members), and inline commenting.
+- **🌐 Multi-workspace switcher** — a workspace dropdown in the board view header; switch workspaces without touching settings.
 - **🏷️ Retro-labeling** — add a #tag to an already-synced item and the label lands on its card on next push (add-only; never removes).
 - **✅ Done items move cards** — check off an item in the note and its card moves to your first "Done" list on next push.
 - **💬 Card comments** — comment on any synced card straight from the editor (cursor on the line → command).
@@ -105,6 +108,7 @@ Settings are grouped into **Connection**, **Push (note → Kan)**, and **Pull (K
 | **Workspace** | Connection | Your Kan workspace public ID. Click **Detect** to auto-fill (first workspace selected; others logged to console) | — |
 | **Rename-safe ID markers** | Push | Hidden `%%kan:ID%%` comments so renames update cards instead of duplicating | On |
 | **Sync #tags as labels** | Push | Item tags become auto-created Kan labels | On |
+| **Sync @mentions as card members** | Push | `@name` assigns matching workspace members to cards (add-only) | On |
 | **Retro-label existing cards** | Push | Tags added to already-synced items label their cards on next push (add-only) | On |
 | **Sync sub-items as card checklists** | Push | Indented checkboxes become a checklist on the card | On |
 | **Subtask checklist name** | Push | Name of the card checklist receiving sub-items | `Subtasks` |
@@ -178,6 +182,7 @@ Run **Pull Kan board status into active note**:
 - **Indented checkboxes** under an item become checklist items on its card (`Subtasks` checklist)
 - `📅 YYYY-MM-DD` or `@due(YYYY-MM-DD)` on an item → card due date
 - `#tags` on an item → Kan labels (auto-created, deterministic colour)
+- `@name` on an item → card assignee (matched against workspace member names / email prefixes)
 - `%%kan:ID%%` markers link lines to cards (added automatically; hidden in Reading mode)
 - Markdown formatting is stripped from card titles: `**bold**`, `[[wikilinks]]`, `[links](url)`, `` `code` ``, dates, tags, markers
 - Card titles are capped at 2,000 characters (API limit)
@@ -221,6 +226,9 @@ The plugin makes HTTPS requests exclusively to `kan.bn` (or your configured inst
 | `/checklists/items/{id}` | PATCH | Two-way sub-item completion |
 | `/cards/{id}/attachments/upload-url` | POST | Presigned S3 URL for attachment upload |
 | `/cards/{id}/attachments/confirm` | POST | Save uploaded attachment to the card |
+| `/cards/{id}` | GET | Card detail modal (description, checklists, attachments, members, activity) |
+| `/cards/{id}/members/{memberId}` | PUT | Assign members from @mentions |
+| `/cards/{id}/activities` | GET | Activity feed pagination (modal uses embedded activities by default) |
 
 Full API docs: [docs.kan.bn/api-reference](https://docs.kan.bn/api-reference/introduction)
 
@@ -240,12 +248,10 @@ Errors are also logged to the developer console (`Ctrl/Cmd + Shift + I`).
 
 ## Limitations
 
-- Completion sync is **additive** in both directions — checking completes, but un-checking never un-completes (prevents sync ping-pong; un-complete manually where needed)
-- Label sync is add-only — removing a #tag doesn't remove the label from the card
-- Attachments upload only — viewing/downloading attachments happens in Kan's UI
+- Completion, label, and member sync are all **additive** — checking/tagging/mentioning adds, but removing never removes on the other side (prevents sync ping-pong; remove manually where needed)
 - Auto-sync pulls only (status → note); pushes remain manual by design (vault owns the plan — pushing automatically on every edit would create half-finished cards)
-- Members/assignees are not synced
-- One workspace at a time (switch via settings)
+- Card detail modal is read-mostly: commenting works inline; editing title/description happens in Kan's UI
+- `@mention` matching needs the person's workspace name or email prefix; unmatched mentions are logged to the console, never guessed
 
 ## Roadmap
 
@@ -263,12 +269,30 @@ Errors are also logged to the developer console (`Ctrl/Cmd + Shift + I`).
 - [x] ~~Done items move cards to Done list~~ — v0.3.0
 - [x] ~~Two-way sub-item completion (note → Kan checklist items)~~ — v0.4.0
 - [x] ~~Card attachments (files + note snapshots)~~ — v0.4.0
-- [ ] Member/assignee sync (`@person` syntax)
-- [ ] Card detail modal (description, comments, activity) in board view
-- [ ] Multi-workspace switcher in board view
-- [ ] Community plugin store submission
+- [x] ~~Member/assignee sync (`@person` syntax)~~ — v0.5.0
+- [x] ~~Card detail modal (description, comments, activity) in board view~~ — v0.5.0
+- [x] ~~Multi-workspace switcher in board view~~ — v0.5.0
+- [ ] Community plugin store submission (repo prepared — see below; requires a GitHub release, done outside the plugin)
+
+**Roadmap complete** as of v0.5.0 — new ideas welcome via issues.
+
+## Publishing to the Community Plugin Store
+
+Everything code-side is ready (`manifest.json`, `versions.json`, no build step). To submit:
+
+1. Push this folder to `github.com/x-o-r-r-o/kan-sync` (repo name should match the plugin ID)
+2. Create a GitHub release tagged `0.5.0` with `manifest.json`, `main.js`, and `styles.css` attached as release assets
+3. Fork [obsidianmd/obsidian-releases](https://github.com/obsidianmd/obsidian-releases), add an entry to `community-plugins.json`, and open a PR
+4. Address review feedback (typical turnaround: a few weeks)
 
 ## Changelog
+
+### 0.5.0
+- `@mention` member sync: assigns matching workspace members to cards on push (name or email-prefix matching, add-only, unmatched logged)
+- Card detail modal: click a card → description, labels, members, checklists, attachment download links, activity feed, inline commenting
+- Multi-workspace switcher in the board view header
+- 👤 assignee names shown on cards in board view
+- `versions.json` added for community store readiness
 
 ### 0.4.0
 - Two-way sub-item completion: checked sub-items in the note complete their Kan checklist items on push (`PATCH /checklists/items/{id}`); additive both ways

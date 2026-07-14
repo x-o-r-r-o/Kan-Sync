@@ -34,3 +34,11 @@
 }
 .kan-suggest-sub { font-size: 0.8em; color: var(--text-muted); }
 .kan-comment-input { width: 100%; margin: 8px 0; }
+.kan-ws-select { max-width: 35%; }
+.kan-card-modal { max-height: 70vh; overflow-y: auto; }
+.kan-modal-meta { color: var(--text-muted); font-size: 0.85em; margin-bottom: 8px; }
+.kan-modal-section { margin: 6px 0; font-size: 0.9em; }
+.kan-modal-desc { white-space: pre-wrap; font-size: 0.9em; background: var(--background-secondary); border-radius: 6px; padding: 8px; }
+.kan-modal-checklist { font-size: 0.9em; margin: 4px 0; }
+.kan-modal-activity { max-height: 180px; overflow-y: auto; font-size: 0.8em; color: var(--text-muted); border-left: 2px solid var(--background-modifier-border); padding-left: 8px; }
+.kan-activity-row { margin-bottom: 3px; }
