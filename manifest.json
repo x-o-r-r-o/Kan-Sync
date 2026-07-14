@@ -1,9 +1,9 @@
 {
   "id": "kan-sync",
   "name": "Kan Sync",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "minAppVersion": "1.0.0",
-  "description": "Sync Obsidian checklists with Kan.bn kanban boards. View boards, push note checklists as cards, pull board status back into notes.",
+  "description": "Sync note checklists with Kan.bn kanban boards. View boards, push checklists as cards, pull board status back into notes.",
   "author": "x-o-r-r-o",
   "authorUrl": "https://github.com/x-o-r-r-o/",
   "isDesktopOnly": false

@@ -4,7 +4,7 @@
 
 [Kan.bn](https://kan.bn) is the open-source alternative to Trello. This plugin turns any Obsidian note with checkboxes into a live kanban board and keeps the two in sync — without ever duplicating your board data locally.
 
-![Version](https://img.shields.io/badge/version-0.5.0-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-0.5.1-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -272,8 +272,18 @@ Errors are also logged to the developer console (`Ctrl/Cmd + Shift + I`).
 - [x] ~~Member/assignee sync (`@person` syntax)~~ — v0.5.0
 - [x] ~~Card detail modal (description, comments, activity) in board view~~ — v0.5.0
 - [x] ~~Multi-workspace switcher in board view~~ — v0.5.0
+- [ ] Community plugin store submission (repo prepared — see below; requires a GitHub release, done outside the plugin)
 
 **Roadmap complete** as of v0.5.0 — new ideas welcome via issues.
+
+## Publishing to the Community Plugin Store
+
+Everything code-side is ready (`manifest.json`, `versions.json`, no build step). To submit:
+
+1. Push this folder to `github.com/x-o-r-r-o/kan-sync` (repo name should match the plugin ID)
+2. Create a GitHub release tagged `0.5.0` with `manifest.json`, `main.js`, and `styles.css` attached as release assets
+3. Fork [obsidianmd/obsidian-releases](https://github.com/obsidianmd/obsidian-releases), add an entry to `community-plugins.json`, and open a PR
+4. Address review feedback (typical turnaround: a few weeks)
 
 ## Changelog
 
