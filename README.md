@@ -78,22 +78,30 @@ Nothing runs in the background — push and pull only happen when you run a comm
 
 ## Installation
 
-### Manual (current method)
+### Community plugins (recommended)
 
-1. Download/copy the plugin folder to your vault:
+1. **Settings → Community plugins** → turn off Restricted mode if prompted
+2. Browse / search for **Kan Sync**
+3. Install and enable
+
+Also listed at [community.obsidian.md](https://community.obsidian.md).
+
+### Manual
+
+1. Download the latest release from [GitHub Releases](https://github.com/x-o-r-r-o/Kan-Sync/releases) (`manifest.json`, `main.js`, `styles.css`)
+2. Copy them into:
    ```
    <your-vault>/.obsidian/plugins/kan-sync/
    ├── manifest.json
    ├── main.js
    └── styles.css
    ```
-2. Reload Obsidian (`Ctrl/Cmd + R`)
-3. **Settings → Community plugins** → turn off Restricted mode if prompted → enable **Kan Sync**
+3. Reload Obsidian (`Ctrl/Cmd + R`) and enable **Kan Sync** under Community plugins
 
-### Via BRAT (if you publish this repo)
+### Via BRAT
 
 1. Install the [BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin
-2. Add this repository's URL as a beta plugin
+2. Add `https://github.com/x-o-r-r-o/Kan-Sync` as a beta plugin
 3. Enable **Kan Sync** in Community plugins
 
 ## Configuration
@@ -282,20 +290,20 @@ Errors are also logged to the developer console (`Ctrl/Cmd + Shift + I`).
 - [x] ~~Member/assignee sync (`@person` syntax)~~ — v0.5.0
 - [x] ~~Card detail modal (description, comments, activity) in board view~~ — v0.5.0
 - [x] ~~Multi-workspace switcher in board view~~ — v0.5.0
-- [ ] Community plugin store submission (repo prepared — see below; requires a GitHub release, done outside the plugin)
+- [x] ~~Community plugin store submission~~ — v0.5.2 (listed in Obsidian Community plugins)
 
-**Roadmap complete** as of v0.5.0 — new ideas welcome via issues.
-
-## Publishing to the Community Plugin Store
-
-Everything code-side is ready (`manifest.json`, `versions.json`, no build step). To submit:
-
-1. Push this folder to `github.com/x-o-r-r-o/kan-sync` (repo name should match the plugin ID)
-2. Create a GitHub release tagged `0.5.0` with `manifest.json`, `main.js`, and `styles.css` attached as release assets
-3. Fork [obsidianmd/obsidian-releases](https://github.com/obsidianmd/obsidian-releases), add an entry to `community-plugins.json`, and open a PR
-4. Address review feedback (typical turnaround: a few weeks)
+**Roadmap complete** as of v0.5.2 — new ideas welcome via issues.
 
 ## Changelog
+
+### 0.5.2
+- Documented network, account, attachment, and vault disclosures in the README
+- Released with GitHub artifact attestations for `main.js`, `manifest.json`, and `styles.css`
+- Community plugin store submission completed
+
+### 0.5.1
+- Fix community review: remove the word "Obsidian" from `manifest.json` description
+- MIT license file aligned with README
 
 ### 0.5.0
 - `@mention` member sync: assigns matching workspace members to cards on push (name or email-prefix matching, add-only, unmatched logged)
