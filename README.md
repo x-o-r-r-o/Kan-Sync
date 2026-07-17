@@ -4,7 +4,7 @@
 
 [Kan.bn](https://kan.bn) is the open-source alternative to Trello. This plugin turns any Obsidian note with checkboxes into a live kanban board and keeps the two in sync — without ever duplicating your board data locally.
 
-![Version](https://img.shields.io/badge/version-0.6.0-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-0.7.0-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -31,7 +31,8 @@
 
 ## Features
 
-- **Sidebar board view with drag & drop** — browse any Kan board inside Obsidian; drag cards between lists or reorder within a list.
+- **Full Kan API coverage (v0.7.0)** — board filters/templates/archive, card editing, workspace admin, invites, permissions, webhook management, Trello/GitHub import.
+- **Sidebar board view with drag & drop** — browse any Kan board inside Obsidian; drag cards between lists or reorder within a list. Filter by due date, label, or member.
 - **Push checklists to Kan** — headings become lists; unchecked items become cards.
 - **Pull board status into notes** — status table + auto-check completed items; optionally enrich lines with due dates, `#tags`, and `@mentions` from Kan.
 - **Rename-safe sync (ID markers)** — hidden `%%kan:ID%%` comments so rewording updates the same card.
@@ -297,6 +298,7 @@ Per [Obsidian developer policies](https://docs.obsidian.md/Developer+policies):
 - **Attachment uploads.** Presigned upload URLs from Kan (typically S3-compatible). The upload request does not include your API key.
 - **No telemetry.** No analytics or third-party calls beyond Kan and Kan-issued upload URLs.
 - **Vault access.** Reads/writes notes via the Obsidian API; does not access files outside the vault.
+- **Webhooks.** You can register webhook URLs in Settings, but Obsidian cannot receive inbound HTTP. Live event→vault sync needs an external relay.
 
 ## Data & Privacy
 
@@ -368,10 +370,20 @@ Errors also go to the developer console (`Ctrl/Cmd + Shift + I`).
 - [x] Members, card modal, multi-workspace — v0.5.0
 - [x] Community plugin store — v0.5.2
 - [x] Description sync, richer pull, clear due, optional deletes, board/list rename — v0.6.0
+- [x] Full Kan API coverage (board filters/templates, card modal CRUD, workspace admin, webhooks manage, imports) — v0.7.0
 
 New ideas welcome via GitHub issues.
 
 ## Changelog
+
+### 0.7.0
+- **Full Kan API coverage** — client wraps all documented REST operations
+- Board view: due/label/member filters, regular/template/archived lists, board actions (favorite, archive, visibility, slug, move, delete, templates), list drag-reorder and delete
+- Card modal: edit title/description/due, toggle labels/members, checklist CRUD (rename/delete/reorder items), comment edit/delete, activity pagination, attachment delete + save to vault, duplicate options
+- Push: new card position (start/end), list reorder to heading order, optional empty-list delete, `kan_template_id` / `kan_labels` frontmatter
+- Settings admin: account/health, workspace CRUD, invites, members/roles/permissions, webhooks (manage only), Trello/GitHub import, label update/delete, danger-zone delete workspace
+- Commands: test connection, import Trello/GitHub, invite/copy invite link, archive/favorite board, create from / save as template
+- **Note:** Obsidian cannot receive inbound webhooks; webhook UI is for managing endpoints only
 
 ### 0.6.0
 - **Description sync** — indented text under a checklist item becomes the card description

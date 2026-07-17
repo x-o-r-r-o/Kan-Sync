@@ -1,11 +1,10 @@
-/* Kan Sync v0.6.0 — plugin for Kan.bn
+/* Kan Sync v0.7.0 — plugin for Kan.bn
  * https://github.com/x-o-r-r-o/
  *
- * v0.6.0: description sync, richer pull (due/#tags/@mentions), clear due date,
- * optional deletes, board/list rename, members on create, duplicate card.
- * v0.5.2: README disclosures; release with artifact attestations.
- * v0.5.1: Fix community manifest description (remove banned word).
- * v0.5.0: @person member sync, card detail modal, multi-workspace switcher.
+ * v0.7.0: Full Kan API coverage — board filters/templates/archive, card modal
+ * editing, comments/checklists/attachments CRUD, workspace admin, invites,
+ * permissions, webhooks (manage), integrations/imports, health/users.
+ * v0.6.0: description sync, richer pull, clear due, optional deletes, renames.
  */
 
 const { Plugin, ItemView, PluginSettingTab, Setting, Notice, requestUrl, Modal, SuggestModal } = require("obsidian");
@@ -17,6 +16,8 @@ const TAG_RE = /(^|\s)#([\w/-]+)/g;
 const MENTION_RE = /(^|\s)@([\w.-]+)/g;
 const LABEL_COLOURS = ["#e74c3c", "#e67e22", "#f1c40f", "#2ecc71", "#1abc9c", "#3498db", "#9b59b6", "#34495e"];
 const DESC_PREFIX = "From Obsidian: ";
+const DUE_FILTERS = ["overdue", "today", "tomorrow", "next-week", "next-month", "no-due-date"];
+const WEBHOOK_EVENTS = ["card.created", "card.updated", "card.moved", "card.deleted"];
 
 const DEFAULT_SETTINGS = {
   apiKey: "",
@@ -41,9 +42,34 @@ const DEFAULT_SETTINGS = {
   allowDeletes: false,
   renameBoard: true,
   renameLists: true,
+  newCardPosition: "end",
+  reorderLists: true,
+  showArchivedBoards: false,
+  boardListType: "regular",
+  boardDueFilter: "",
 };
 
-/* ---------------- API client ---------------- */
+/* ---------------- query + API client ---------------- */
+
+function qs(params) {
+  if (!params) return "";
+  const parts = [];
+  for (const key of Object.keys(params)) {
+    const v = params[key];
+    if (v === undefined || v === null || v === "") continue;
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        if (item === undefined || item === null || item === "") continue;
+        parts.push(encodeURIComponent(key) + "=" + encodeURIComponent(item));
+      }
+    } else if (typeof v === "boolean") {
+      parts.push(encodeURIComponent(key) + "=" + (v ? "true" : "false"));
+    } else {
+      parts.push(encodeURIComponent(key) + "=" + encodeURIComponent(v));
+    }
+  }
+  return parts.length ? "?" + parts.join("&") : "";
+}
 
 class KanClient {
   constructor(getSettings) {
@@ -68,56 +94,116 @@ class KanClient {
     return res.json;
   }
 
+  // ---- health / users ----
+  health() { return this.req("GET", "/health"); }
+  stats() { return this.req("GET", "/stats"); }
+  getMe() { return this.req("GET", "/users/me"); }
+  updateUser(patch) { return this.req("PUT", "/users", patch); }
+  setPassword(newPassword) { return this.req("POST", "/users/me/password", { newPassword }); }
+
+  // ---- workspaces ----
   async getWorkspaces() {
     const raw = await this.req("GET", "/workspaces");
     return (raw || []).map((w) => (w && w.workspace) ? w.workspace : w).filter(Boolean);
   }
-  getBoards(wsId) { return this.req("GET", `/workspaces/${wsId}/boards`); }
-  getBoard(boardId) { return this.req("GET", `/boards/${boardId}`); }
-  createBoard(wsId, name, listNames) {
-    return this.req("POST", `/workspaces/${wsId}/boards`, { name, lists: listNames, labels: [] });
+  getWorkspace(wsId) { return this.req("GET", `/workspaces/${wsId}`); }
+  getWorkspaceBySlug(slug) { return this.req("GET", `/workspaces/${encodeURIComponent(slug)}`); }
+  createWorkspace(body) { return this.req("POST", "/workspaces", body); }
+  updateWorkspace(wsId, patch) { return this.req("PUT", `/workspaces/${wsId}`, patch); }
+  deleteWorkspace(wsId) { return this.req("DELETE", `/workspaces/${wsId}`); }
+  checkWorkspaceSlug(slug) {
+    return this.req("GET", `/workspaces/check-slug-availability${qs({ workspaceSlug: slug })}`);
   }
+
+  // ---- boards ----
+  getBoards(wsId, opts) {
+    return this.req("GET", `/workspaces/${wsId}/boards${qs(opts || {})}`);
+  }
+  getBoard(boardId, filters) {
+    return this.req("GET", `/boards/${boardId}${qs(filters || {})}`);
+  }
+  getBoardBySlug(wsSlug, boardSlug, filters) {
+    return this.req("GET", `/workspaces/${encodeURIComponent(wsSlug)}/boards/${encodeURIComponent(boardSlug)}${qs(filters || {})}`);
+  }
+  createBoard(wsId, name, listNames, opts) {
+    opts = opts || {};
+    return this.req("POST", `/workspaces/${wsId}/boards`, {
+      name,
+      lists: listNames || [],
+      labels: opts.labels || [],
+      type: opts.type || "regular",
+      sourceBoardPublicId: opts.sourceBoardPublicId,
+    });
+  }
+  updateBoard(boardId, patch) { return this.req("PUT", `/boards/${boardId}`, patch); }
+  deleteBoard(boardId) { return this.req("DELETE", `/boards/${boardId}`); }
+  checkBoardSlug(boardId, boardSlug) {
+    return this.req("GET", `/boards/${boardId}/check-slug-availability${qs({ boardSlug })}`);
+  }
+  moveBoard(boardId, targetWorkspacePublicId) {
+    return this.req("POST", `/boards/${boardId}/move`, { targetWorkspacePublicId });
+  }
+
+  // ---- lists ----
   createList(boardId, name) { return this.req("POST", "/lists", { name, boardPublicId: boardId }); }
   updateList(listId, patch) { return this.req("PUT", `/lists/${listId}`, patch); }
-  updateBoard(boardId, patch) { return this.req("PUT", `/boards/${boardId}`, patch); }
-  createCard(listId, title, description, dueDate, labelPublicIds, memberPublicIds) {
+  deleteList(listId) { return this.req("DELETE", `/lists/${listId}`); }
+
+  // ---- cards ----
+  createCard(listId, title, description, dueDate, labelPublicIds, memberPublicIds, position) {
     return this.req("POST", "/cards", {
       title: title.slice(0, 2000),
       description: (description || "").slice(0, 10000),
       listPublicId: listId,
       labelPublicIds: labelPublicIds || [],
       memberPublicIds: memberPublicIds || [],
-      position: "end",
+      position: position === "start" ? "start" : "end",
       dueDate: dueDate || null,
     });
   }
+  getCard(cardId) { return this.req("GET", `/cards/${cardId}`); }
   updateCard(cardId, patch) { return this.req("PUT", `/cards/${cardId}`, patch); }
   deleteCard(cardId) { return this.req("DELETE", `/cards/${cardId}`); }
   duplicateCard(cardId, listPublicId, opts) {
     opts = opts || {};
-    return this.req("POST", `/cards/${cardId}/duplicate`, {
+    const body = {
       listPublicId,
       copyLabels: opts.copyLabels !== false,
       copyMembers: opts.copyMembers !== false,
       copyChecklists: opts.copyChecklists !== false,
-      title: opts.title,
-    });
+    };
+    if (opts.title) body.title = opts.title;
+    if (opts.index !== undefined && opts.index !== null) body.index = opts.index;
+    return this.req("POST", `/cards/${cardId}/duplicate`, body);
   }
+  getCardActivities(cardId, limit, cursor) {
+    return this.req("GET", `/cards/${cardId}/activities${qs({ limit: limit || 20, cursor })}`);
+  }
+  toggleCardLabel(cardId, labelId) { return this.req("PUT", `/cards/${cardId}/labels/${labelId}`); }
+  toggleCardMember(cardId, memberId) { return this.req("PUT", `/cards/${cardId}/members/${memberId}`); }
+  addComment(cardId, comment) { return this.req("POST", `/cards/${cardId}/comments`, { comment }); }
+  updateComment(cardId, commentId, comment) {
+    return this.req("PUT", `/cards/${cardId}/comments/${commentId}`, { comment });
+  }
+  deleteComment(cardId, commentId) { return this.req("DELETE", `/cards/${cardId}/comments/${commentId}`); }
+
+  // ---- checklists ----
+  createChecklist(cardId, name) { return this.req("POST", `/cards/${cardId}/checklists`, { name: name.slice(0, 255) }); }
+  updateChecklist(checklistId, patch) { return this.req("PUT", `/checklists/${checklistId}`, patch); }
+  deleteChecklist(checklistId) { return this.req("DELETE", `/checklists/${checklistId}`); }
+  addChecklistItem(checklistId, title) { return this.req("POST", `/checklists/${checklistId}/items`, { title: title.slice(0, 500) }); }
+  updateChecklistItem(itemId, patch) { return this.req("PATCH", `/checklists/items/${itemId}`, patch); }
+  deleteChecklistItem(itemId) { return this.req("DELETE", `/checklists/items/${itemId}`); }
+
+  // ---- labels ----
   createLabel(boardId, name, colourCode) {
     return this.req("POST", "/labels", { name: name.slice(0, 36), boardPublicId: boardId, colourCode });
   }
-  toggleCardLabel(cardId, labelId) { return this.req("PUT", `/cards/${cardId}/labels/${labelId}`); }
-  addComment(cardId, comment) { return this.req("POST", `/cards/${cardId}/comments`, { comment }); }
-  createChecklist(cardId, name) { return this.req("POST", `/cards/${cardId}/checklists`, { name: name.slice(0, 255) }); }
-  addChecklistItem(checklistId, title) { return this.req("POST", `/checklists/${checklistId}/items`, { title: title.slice(0, 500) }); }
-  deleteChecklistItem(itemId) { return this.req("DELETE", `/checklists/items/${itemId}`); }
-  search(wsId, query, limit) {
-    return this.req("GET", `/workspaces/${wsId}/search?query=${encodeURIComponent(query.slice(0, 100))}&limit=${limit || 20}`);
-  }
-  updateChecklistItem(itemId, patch) { return this.req("PATCH", `/checklists/items/${itemId}`, patch); }
-  getCard(cardId) { return this.req("GET", `/cards/${cardId}`); }
-  toggleCardMember(cardId, memberId) { return this.req("PUT", `/cards/${cardId}/members/${memberId}`); }
-  getCardActivities(cardId, limit) { return this.req("GET", `/cards/${cardId}/activities?limit=${limit || 20}`); }
+  getLabel(labelId) { return this.req("GET", `/labels/${labelId}`); }
+  updateLabel(labelId, patch) { return this.req("PUT", `/labels/${labelId}`, patch); }
+  deleteLabel(labelId) { return this.req("DELETE", `/labels/${labelId}`); }
+
+  // ---- attachments ----
   getAttachmentUploadUrl(cardId, filename, contentType, size) {
     return this.req("POST", `/cards/${cardId}/attachments/upload-url`, { filename: filename.slice(0, 255), contentType, size });
   }
@@ -127,10 +213,77 @@ class KanClient {
     });
   }
   deleteAttachment(attachmentId) { return this.req("DELETE", `/attachments/${attachmentId}`); }
-  // presigned S3 PUT — must NOT carry the Kan Authorization header
   async uploadToPresigned(url, data, contentType) {
     const res = await requestUrl({ url, method: "PUT", headers: { "Content-Type": contentType }, body: data, throw: false });
     if (res.status >= 400) throw new Error(`S3 upload failed (${res.status})`);
+  }
+
+  // ---- search ----
+  search(wsId, query, limit) {
+    return this.req("GET", `/workspaces/${wsId}/search${qs({ query: String(query).slice(0, 100), limit: limit || 20 })}`);
+  }
+
+  // ---- members / invites ----
+  inviteMember(wsId, email) {
+    return this.req("POST", `/workspaces/${wsId}/members/invite`, { email });
+  }
+  removeMember(wsId, memberId) { return this.req("DELETE", `/workspaces/${wsId}/members/${memberId}`); }
+  updateMemberRole(wsId, memberId, role) {
+    return this.req("PUT", `/workspaces/${wsId}/members/${memberId}/role`, { role });
+  }
+  getInviteLink(wsId) { return this.req("GET", `/workspaces/${wsId}/invite`); }
+  createInviteLink(wsId) { return this.req("POST", `/workspaces/${wsId}/invites`); }
+  deactivateInviteLink(wsId) { return this.req("DELETE", `/workspaces/${wsId}/invites`); }
+  getInviteInfo(code) { return this.req("GET", `/invites/${encodeURIComponent(code)}`); }
+  acceptInvite(inviteCode) { return this.req("POST", "/invites/accept", { inviteCode }); }
+
+  // ---- permissions ----
+  getMyPermissions(wsId) { return this.req("GET", `/workspaces/${wsId}/permissions/me`); }
+  getRoles(wsId) { return this.req("GET", `/workspaces/${wsId}/roles`); }
+  getWorkspaceRolePermissions(wsId) { return this.req("GET", `/workspaces/${wsId}/roles/permissions`); }
+  getRolePermissions(wsId, roleId) { return this.req("GET", `/workspaces/${wsId}/roles/${roleId}/permissions`); }
+  getMemberPermissions(wsId, memberId) {
+    return this.req("GET", `/workspaces/${wsId}/members/${memberId}/permissions`);
+  }
+  grantRolePermission(wsId, roleId, permission) {
+    return this.req("POST", `/workspaces/${wsId}/roles/${roleId}/permissions/grant`, { permission });
+  }
+  revokeRolePermission(wsId, roleId, permission) {
+    return this.req("POST", `/workspaces/${wsId}/roles/${roleId}/permissions/revoke`, { permission });
+  }
+  grantMemberPermission(wsId, memberId, permission) {
+    return this.req("POST", `/workspaces/${wsId}/members/${memberId}/permissions/grant`, { permission });
+  }
+  revokeMemberPermission(wsId, memberId, permission) {
+    return this.req("POST", `/workspaces/${wsId}/members/${memberId}/permissions/revoke`, { permission });
+  }
+  resetMemberPermissions(wsId, memberId) {
+    return this.req("POST", `/workspaces/${wsId}/members/${memberId}/permissions/reset`);
+  }
+  resetAllMemberPermissions(wsId) {
+    return this.req("POST", `/workspaces/${wsId}/members/permissions/reset`);
+  }
+
+  // ---- webhooks ----
+  getWebhooks(wsId) { return this.req("GET", `/workspaces/${wsId}/webhooks`); }
+  createWebhook(wsId, body) { return this.req("POST", `/workspaces/${wsId}/webhooks`, body); }
+  updateWebhook(wsId, webhookId, patch) { return this.req("PUT", `/workspaces/${wsId}/webhooks/${webhookId}`, patch); }
+  deleteWebhook(wsId, webhookId) { return this.req("DELETE", `/workspaces/${wsId}/webhooks/${webhookId}`); }
+  testWebhook(wsId, webhookId) { return this.req("POST", `/workspaces/${wsId}/webhooks/${webhookId}/test`); }
+
+  // ---- integrations / imports ----
+  getIntegrationProviders() { return this.req("GET", "/integration/providers"); }
+  getIntegrationAuthorizeUrl(provider) {
+    return this.req("GET", `/integration/authorize${qs({ provider })}`);
+  }
+  disconnectIntegration(provider) { return this.req("POST", "/integration/disconnect", { provider }); }
+  getTrelloBoards() { return this.req("GET", "/integrations/trello/boards"); }
+  getGithubProjects() { return this.req("GET", "/integrations/github/projects"); }
+  importTrelloBoards(workspacePublicId, boardIds) {
+    return this.req("POST", "/imports/trello/boards", { workspacePublicId, boardIds });
+  }
+  importGithubProjects(workspacePublicId, projectIds) {
+    return this.req("POST", "/imports/github/projects", { workspacePublicId, projectIds });
   }
 }
 
@@ -260,6 +413,177 @@ function parseNote(content, defaultListName) {
   return { sections, lines };
 }
 
+/* ---------------- shared modals ---------------- */
+
+class KanConfirmModal extends Modal {
+  constructor(app, title, message, onConfirm) {
+    super(app);
+    this.titleText = title;
+    this.message = message;
+    this.onConfirm = onConfirm;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.titleText });
+    contentEl.createDiv({ text: this.message, cls: "kan-modal-section" });
+    const row = contentEl.createDiv({ cls: "kan-btn-row" });
+    const cancel = row.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
+    const ok = row.createEl("button", { text: "Confirm", cls: "mod-warning" });
+    ok.onclick = async () => {
+      this.close();
+      try { await this.onConfirm(); } catch (e) { new Notice("Kan error: " + e.message, 8000); console.error(e); }
+    };
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
+class KanPromptModal extends Modal {
+  constructor(app, title, fields, onSubmit) {
+    super(app);
+    this.titleText = title;
+    this.fields = fields; // [{key, label, value, type, placeholder}]
+    this.onSubmit = onSubmit;
+    this.values = {};
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.titleText });
+    for (const f of this.fields) {
+      const wrap = contentEl.createDiv({ cls: "kan-field" });
+      wrap.createEl("label", { text: f.label });
+      if (f.type === "textarea") {
+        const ta = wrap.createEl("textarea", { cls: "kan-comment-input" });
+        ta.value = f.value || "";
+        ta.rows = f.rows || 3;
+        ta.placeholder = f.placeholder || "";
+        this.values[f.key] = ta;
+      } else if (f.type === "select") {
+        const sel = wrap.createEl("select", { cls: "kan-select" });
+        for (const opt of f.options || []) {
+          const o = sel.createEl("option", { text: opt.label, value: opt.value });
+          if (String(opt.value) === String(f.value)) o.selected = true;
+        }
+        this.values[f.key] = sel;
+      } else if (f.type === "toggle") {
+        const inp = wrap.createEl("input");
+        inp.type = "checkbox";
+        inp.checked = !!f.value;
+        this.values[f.key] = inp;
+      } else {
+        const inp = wrap.createEl("input", { cls: "kan-input" });
+        inp.type = f.type || "text";
+        inp.value = f.value || "";
+        inp.placeholder = f.placeholder || "";
+        this.values[f.key] = inp;
+      }
+    }
+    const row = contentEl.createDiv({ cls: "kan-btn-row" });
+    row.createEl("button", { text: "Cancel" }).onclick = () => this.close();
+    const ok = row.createEl("button", { text: "Save", cls: "mod-cta" });
+    ok.onclick = async () => {
+      const out = {};
+      for (const f of this.fields) {
+        const el = this.values[f.key];
+        if (f.type === "toggle") out[f.key] = el.checked;
+        else out[f.key] = el.value;
+      }
+      this.close();
+      try { await this.onSubmit(out); } catch (e) { new Notice("Kan error: " + e.message, 8000); console.error(e); }
+    };
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
+class KanDuplicateModal extends Modal {
+  constructor(app, plugin, card) {
+    super(app);
+    this.plugin = plugin;
+    this.card = card;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    const card = this.card;
+    const board = card.list && card.list.board;
+    contentEl.createEl("h3", { text: "Duplicate card" });
+    const title = contentEl.createEl("input", { cls: "kan-input", attr: { placeholder: "Title (optional)" } });
+    title.value = (card.title || "") + " (copy)";
+    const listSel = contentEl.createEl("select", { cls: "kan-select" });
+    const lists = (board && board.lists) || (card.list ? [card.list] : []);
+    for (const l of lists) {
+      const o = listSel.createEl("option", { text: l.name, value: l.publicId });
+      if (card.list && l.publicId === card.list.publicId) o.selected = true;
+    }
+    const copyLabels = contentEl.createEl("label"); copyLabels.createEl("input", { attr: { type: "checkbox" } }).checked = true; copyLabels.appendText(" Copy labels");
+    const copyMembers = contentEl.createEl("label"); copyMembers.createEl("input", { attr: { type: "checkbox" } }).checked = true; copyMembers.appendText(" Copy members");
+    const copyChecklists = contentEl.createEl("label"); copyChecklists.createEl("input", { attr: { type: "checkbox" } }).checked = true; copyChecklists.appendText(" Copy checklists");
+    copyLabels.style.display = copyMembers.style.display = copyChecklists.style.display = "block";
+    const row = contentEl.createDiv({ cls: "kan-btn-row" });
+    row.createEl("button", { text: "Cancel" }).onclick = () => this.close();
+    row.createEl("button", { text: "Duplicate", cls: "mod-cta" }).onclick = async () => {
+      try {
+        await this.plugin.client.duplicateCard(card.publicId, listSel.value, {
+          title: title.value.trim() || undefined,
+          copyLabels: copyLabels.querySelector("input").checked,
+          copyMembers: copyMembers.querySelector("input").checked,
+          copyChecklists: copyChecklists.querySelector("input").checked,
+        });
+        new Notice("Card duplicated.");
+        this.close();
+      } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+    };
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
+class KanImportModal extends Modal {
+  constructor(app, plugin, kind) {
+    super(app);
+    this.plugin = plugin;
+    this.kind = kind; // trello | github
+  }
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.kind === "trello" ? "Import Trello boards" : "Import GitHub projects" });
+    contentEl.setText("Loading…");
+    let items = [];
+    try {
+      items = this.kind === "trello"
+        ? (await this.plugin.client.getTrelloBoards()) || []
+        : (await this.plugin.client.getGithubProjects()) || [];
+    } catch (e) {
+      contentEl.setText("Error: " + e.message + " — connect the integration in Kan first.");
+      return;
+    }
+    contentEl.empty();
+    contentEl.createEl("h3", { text: this.kind === "trello" ? "Import Trello boards" : "Import GitHub projects" });
+    if (!items.length) { contentEl.createDiv({ text: "No items found." }); return; }
+    const boxes = [];
+    for (const it of items) {
+      const row = contentEl.createDiv({ cls: "kan-field" });
+      const cb = row.createEl("input", { attr: { type: "checkbox" } });
+      const id = it.id || it.publicId || it.boardId || it.projectId;
+      const name = it.name || it.title || String(id);
+      row.appendText(" " + name);
+      boxes.push({ cb, id });
+    }
+    const btnRow = contentEl.createDiv({ cls: "kan-btn-row" });
+    btnRow.createEl("button", { text: "Cancel" }).onclick = () => this.close();
+    btnRow.createEl("button", { text: "Import", cls: "mod-cta" }).onclick = async () => {
+      const ids = boxes.filter((b) => b.cb.checked).map((b) => b.id);
+      if (!ids.length) { new Notice("Select at least one."); return; }
+      const ws = this.plugin.settings.workspaceId;
+      try {
+        if (this.kind === "trello") await this.plugin.client.importTrelloBoards(ws, ids);
+        else await this.plugin.client.importGithubProjects(ws, ids);
+        new Notice(`Imported ${ids.length} item(s).`);
+        this.close();
+      } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+    };
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
 /* ---------------- search modal ---------------- */
 
 class KanSearchModal extends SuggestModal {
@@ -324,6 +648,8 @@ class KanCardModal extends Modal {
     super(app);
     this.plugin = plugin;
     this.cardId = cardId;
+    this.activityCursor = null;
+    this.extraActivities = [];
   }
 
   async onOpen() {
@@ -333,69 +659,201 @@ class KanCardModal extends Modal {
     let card;
     try { card = await this.plugin.client.getCard(this.cardId); }
     catch (e) { contentEl.setText("Error: " + e.message); return; }
+    this.card = card;
     contentEl.empty();
 
-    // header
     const prefix = card.list?.board?.workspace?.cardPrefix;
-    contentEl.createEl("h3", { text: (prefix && card.cardNumber ? `${prefix}-${card.cardNumber} · ` : "") + card.title });
+    const head = contentEl.createDiv({ cls: "kan-modal-head" });
+    head.createEl("h3", { text: (prefix && card.cardNumber ? `${prefix}-${card.cardNumber} · ` : "") + card.title });
+    const actions = head.createDiv({ cls: "kan-btn-row" });
+    actions.createEl("button", { text: "Edit" }).onclick = () => this.editCard(card);
+    actions.createEl("button", { text: "Duplicate" }).onclick = () => new KanDuplicateModal(this.app, this.plugin, card).open();
+
     const meta = contentEl.createDiv({ cls: "kan-modal-meta" });
     meta.createSpan({ text: `📁 ${card.list?.board?.name || ""} → ${card.list?.name || ""}` });
     if (card.dueDate) meta.createSpan({ text: `  ·  📅 ${String(card.dueDate).slice(0, 10)}` });
 
-    if ((card.labels || []).length) {
-      const lbls = contentEl.createDiv({ cls: "kan-card-labels" });
-      for (const l of card.labels) {
-        const span = lbls.createSpan({ cls: "kan-label", text: l.name });
-        if (l.colourCode) span.style.background = l.colourCode + "33";
-      }
+    // labels toggle
+    contentEl.createEl("h5", { text: "Labels" });
+    const boardLabels = (card.list && card.list.board && card.list.board.labels) || card.boardLabels || [];
+    const haveLabels = new Set((card.labels || []).map((l) => l.publicId));
+    const lblRow = contentEl.createDiv({ cls: "kan-card-labels" });
+    const labelSource = boardLabels.length ? boardLabels : (card.labels || []);
+    for (const l of labelSource) {
+      const span = lblRow.createEl("button", { cls: "kan-label", text: (haveLabels.has(l.publicId) ? "✓ " : "") + l.name });
+      if (l.colourCode) span.style.background = l.colourCode + "33";
+      span.onclick = async () => {
+        try {
+          await this.plugin.client.toggleCardLabel(this.cardId, l.publicId);
+          this.extraActivities = []; this.activityCursor = null;
+          await this.onOpen();
+        } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+      };
     }
+    if (!labelSource.length) contentEl.createDiv({ cls: "kan-modal-section", text: "No labels on board." });
 
-    if ((card.members || []).length) {
-      contentEl.createDiv({ cls: "kan-modal-section", text: "👤 " + card.members.map((m) => (m.user && m.user.name) || m.email).join(", ") });
+    // members toggle
+    contentEl.createEl("h5", { text: "Members" });
+    const wsMembers = (card.list && card.list.board && card.list.board.workspace && card.list.board.workspace.members) || [];
+    const haveMembers = new Set((card.members || []).map((m) => m.publicId));
+    const memRow = contentEl.createDiv({ cls: "kan-btn-row" });
+    const memberSource = wsMembers.length ? wsMembers : (card.members || []);
+    for (const m of memberSource) {
+      const name = (m.user && m.user.name) || m.email || m.publicId;
+      const btn = memRow.createEl("button", { text: (haveMembers.has(m.publicId) ? "✓ " : "") + name });
+      btn.onclick = async () => {
+        try {
+          await this.plugin.client.toggleCardMember(this.cardId, m.publicId);
+          await this.onOpen();
+        } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+      };
     }
+    if (!memberSource.length) contentEl.createDiv({ cls: "kan-modal-section", text: "No workspace members loaded." });
 
-    if (card.description) {
-      contentEl.createEl("h5", { text: "Description" });
-      contentEl.createDiv({ cls: "kan-modal-desc", text: card.description });
-    }
+    contentEl.createEl("h5", { text: "Description" });
+    contentEl.createDiv({ cls: "kan-modal-desc", text: card.description || "(empty)" });
 
+    // checklists
+    contentEl.createEl("h5", { text: "Checklists" });
     for (const cl of card.checklists || []) {
       const total = (cl.items || []).length;
       const done = (cl.items || []).filter((i) => i.completed).length;
-      contentEl.createEl("h5", { text: `${cl.name} (${done}/${total})` });
+      const clHead = contentEl.createDiv({ cls: "kan-btn-row" });
+      clHead.createEl("strong", { text: `${cl.name} (${done}/${total})` });
+      clHead.createEl("button", { text: "Rename" }).onclick = () => {
+        new KanPromptModal(this.app, "Rename checklist", [
+          { key: "name", label: "Name", value: cl.name },
+        ], async (v) => {
+          await this.plugin.client.updateChecklist(cl.publicId, { name: v.name });
+          await this.onOpen();
+        }).open();
+      };
+      clHead.createEl("button", { text: "Delete", cls: "mod-warning" }).onclick = () => {
+        new KanConfirmModal(this.app, "Delete checklist", `Delete checklist "${cl.name}"?`, async () => {
+          await this.plugin.client.deleteChecklist(cl.publicId);
+          await this.onOpen();
+        }).open();
+      };
       const ul = contentEl.createEl("ul", { cls: "kan-modal-checklist" });
-      for (const it of cl.items || []) ul.createEl("li", { text: (it.completed ? "☑ " : "☐ ") + it.title });
+      (cl.items || []).forEach((it, idx) => {
+        const li = ul.createEl("li", { cls: "kan-btn-row" });
+        const toggle = li.createEl("button", { text: it.completed ? "☑" : "☐" });
+        toggle.onclick = async () => {
+          await this.plugin.client.updateChecklistItem(it.publicId, { completed: !it.completed });
+          await this.onOpen();
+        };
+        li.createSpan({ text: " " + it.title + " " });
+        li.createEl("button", { text: "Edit" }).onclick = () => {
+          new KanPromptModal(this.app, "Edit checklist item", [
+            { key: "title", label: "Title", value: it.title },
+          ], async (v) => {
+            await this.plugin.client.updateChecklistItem(it.publicId, { title: v.title, index: idx });
+            await this.onOpen();
+          }).open();
+        };
+        if (idx > 0) {
+          li.createEl("button", { text: "↑" }).onclick = async () => {
+            await this.plugin.client.updateChecklistItem(it.publicId, { index: idx - 1 });
+            await this.onOpen();
+          };
+        }
+        li.createEl("button", { text: "Del" }).onclick = async () => {
+          await this.plugin.client.deleteChecklistItem(it.publicId);
+          await this.onOpen();
+        };
+      });
+      const addItem = contentEl.createEl("button", { text: "+ Item" });
+      addItem.onclick = () => {
+        new KanPromptModal(this.app, "Add checklist item", [
+          { key: "title", label: "Title", value: "" },
+        ], async (v) => {
+          if (!v.title.trim()) return;
+          await this.plugin.client.addChecklistItem(cl.publicId, v.title.trim());
+          await this.onOpen();
+        }).open();
+      };
     }
+    contentEl.createEl("button", { text: "+ Checklist" }).onclick = () => {
+      new KanPromptModal(this.app, "New checklist", [
+        { key: "name", label: "Name", value: "Checklist" },
+      ], async (v) => {
+        await this.plugin.client.createChecklist(this.cardId, v.name || "Checklist");
+        await this.onOpen();
+      }).open();
+    };
 
-    if ((card.attachments || []).length) {
-      contentEl.createEl("h5", { text: "Attachments" });
-      const ul = contentEl.createEl("ul", { cls: "kan-modal-checklist" });
-      for (const a of card.attachments) {
-        const li = ul.createEl("li");
-        const name = a.originalFilename || a.s3Key;
-        if (a.url) li.createEl("a", { text: "📎 " + name, href: a.url });
-        else li.setText("📎 " + name);
+    // attachments
+    contentEl.createEl("h5", { text: "Attachments" });
+    const ul = contentEl.createEl("ul", { cls: "kan-modal-checklist" });
+    for (const a of card.attachments || []) {
+      const li = ul.createEl("li", { cls: "kan-btn-row" });
+      const name = a.originalFilename || a.s3Key;
+      if (a.url) li.createEl("a", { text: "📎 " + name, href: a.url });
+      else li.createSpan({ text: "📎 " + name });
+      if (a.url) {
+        li.createEl("button", { text: "Save" }).onclick = async () => {
+          try {
+            await this.plugin.saveAttachmentToVault(a);
+            new Notice("Saved to vault.");
+          } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+        };
+      }
+      li.createEl("button", { text: "Delete", cls: "mod-warning" }).onclick = () => {
+        new KanConfirmModal(this.app, "Delete attachment", `Delete "${name}"?`, async () => {
+          await this.plugin.client.deleteAttachment(a.publicId);
+          await this.onOpen();
+        }).open();
+      };
+    }
+    if (!(card.attachments || []).length) contentEl.createDiv({ cls: "kan-modal-section", text: "No attachments." });
+
+    // activity + comments from activities
+    contentEl.createEl("h5", { text: "Activity" });
+    const feed = contentEl.createDiv({ cls: "kan-modal-activity" });
+    let acts = (card.activities || []).slice();
+    if (this.extraActivities.length) acts = acts.concat(this.extraActivities);
+    if (!acts.length) feed.setText("No activity.");
+    for (const a of acts.slice().reverse()) this.renderActivity(feed, a);
+
+    const loadMore = contentEl.createEl("button", { text: "Load more activity" });
+    loadMore.onclick = async () => {
+      try {
+        const page = await this.plugin.client.getCardActivities(this.cardId, 20, this.activityCursor);
+        const list = Array.isArray(page) ? page : (page && (page.items || page.activities)) || [];
+        const next = page && (page.nextCursor || page.cursor || (page.meta && page.meta.cursor));
+        if (next) this.activityCursor = next;
+        this.extraActivities = this.extraActivities.concat(list);
+        await this.onOpen();
+      } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+    };
+
+    // comments list with edit/delete when comment id present
+    contentEl.createEl("h5", { text: "Comments" });
+    for (const a of acts) {
+      if (!(a.comment && a.comment.comment)) continue;
+      const row = contentEl.createDiv({ cls: "kan-btn-row" });
+      row.createSpan({ text: a.comment.comment });
+      const cid = a.comment.publicId;
+      if (cid) {
+        row.createEl("button", { text: "Edit" }).onclick = () => {
+          new KanPromptModal(this.app, "Edit comment", [
+            { key: "comment", label: "Comment", type: "textarea", value: a.comment.comment },
+          ], async (v) => {
+            await this.plugin.client.updateComment(this.cardId, cid, v.comment);
+            this.extraActivities = []; this.activityCursor = null;
+            await this.onOpen();
+          }).open();
+        };
+        row.createEl("button", { text: "Delete", cls: "mod-warning" }).onclick = () => {
+          new KanConfirmModal(this.app, "Delete comment", "Delete this comment?", async () => {
+            await this.plugin.client.deleteComment(this.cardId, cid);
+            this.extraActivities = []; this.activityCursor = null;
+            await this.onOpen();
+          }).open();
+        };
       }
     }
 
-    // comments + activity
-    const acts = card.activities || [];
-    contentEl.createEl("h5", { text: "Activity" });
-    const feed = contentEl.createDiv({ cls: "kan-modal-activity" });
-    if (!acts.length) feed.setText("No activity.");
-    for (const a of acts.slice(-15).reverse()) {
-      const when = String(a.createdAt).slice(0, 16).replace("T", " ");
-      const who = (a.user && (a.user.name || a.user.email)) || "";
-      let what = a.type;
-      if (a.comment && a.comment.comment) what = `💬 ${a.comment.comment}`;
-      else if (a.fromList && a.toList) what = `moved ${a.fromList.name} → ${a.toList.name}`;
-      else if (a.toTitle && a.fromTitle) what = `renamed "${a.fromTitle}" → "${a.toTitle}"`;
-      else if (a.label) what = `label: ${a.label.name}`;
-      else if (a.member) what = `member: ${(a.member.user && a.member.user.name) || ""}`;
-      feed.createDiv({ cls: "kan-activity-row", text: `${when} ${who ? "· " + who + " " : ""}· ${what}` });
-    }
-
-    // add comment
     const ta = contentEl.createEl("textarea", { cls: "kan-comment-input" });
     ta.rows = 2;
     ta.placeholder = "Write a comment…";
@@ -406,9 +864,39 @@ class KanCardModal extends Modal {
       try {
         await this.plugin.client.addComment(this.cardId, text);
         new Notice("Comment added.");
-        this.onOpen(); // re-render
+        this.extraActivities = []; this.activityCursor = null;
+        await this.onOpen();
       } catch (e) { new Notice("Kan error: " + e.message, 8000); }
     };
+  }
+
+  renderActivity(feed, a) {
+    const when = String(a.createdAt || "").slice(0, 16).replace("T", " ");
+    const who = (a.user && (a.user.name || a.user.email)) || "";
+    let what = a.type || "activity";
+    if (a.comment && a.comment.comment) what = `💬 ${a.comment.comment}`;
+    else if (a.fromList && a.toList) what = `moved ${a.fromList.name} → ${a.toList.name}`;
+    else if (a.toTitle && a.fromTitle) what = `renamed "${a.fromTitle}" → "${a.toTitle}"`;
+    else if (a.label) what = `label: ${a.label.name}`;
+    else if (a.member) what = `member: ${(a.member.user && a.member.user.name) || ""}`;
+    feed.createDiv({ cls: "kan-activity-row", text: `${when} ${who ? "· " + who + " " : ""}· ${what}` });
+  }
+
+  editCard(card) {
+    new KanPromptModal(this.app, "Edit card", [
+      { key: "title", label: "Title", value: card.title || "" },
+      { key: "description", label: "Description", type: "textarea", value: card.description || "", rows: 6 },
+      { key: "dueDate", label: "Due date (YYYY-MM-DD, empty to clear)", value: card.dueDate ? String(card.dueDate).slice(0, 10) : "" },
+    ], async (v) => {
+      const patch = {
+        title: v.title.slice(0, 2000),
+        description: v.description.slice(0, 10000),
+        dueDate: v.dueDate.trim() ? toIsoDue(v.dueDate.trim()) : null,
+      };
+      await this.plugin.client.updateCard(this.cardId, patch);
+      new Notice("Card updated.");
+      await this.onOpen();
+    }).open();
   }
 
   onClose() { this.contentEl.empty(); }
@@ -422,6 +910,10 @@ class KanBoardView extends ItemView {
     this.plugin = plugin;
     this.boards = [];
     this.selectedBoardId = null;
+    this.filterDue = plugin.settings.boardDueFilter || "";
+    this.filterLabelIds = [];
+    this.filterMemberIds = [];
+    this.currentBoard = null;
   }
 
   getViewType() { return VIEW_TYPE_KAN; }
@@ -430,16 +922,55 @@ class KanBoardView extends ItemView {
 
   async onOpen() { await this.render(); }
 
+  boardFilters() {
+    const f = {};
+    if (this.filterDue) f.dueDateFilters = [this.filterDue];
+    if (this.filterLabelIds.length) f.labels = this.filterLabelIds;
+    if (this.filterMemberIds.length) f.members = this.filterMemberIds;
+    return f;
+  }
+
   async render() {
     const el = this.contentEl;
     el.empty();
     el.addClass("kan-view");
+    const self = this;
 
     const header = el.createDiv({ cls: "kan-header" });
     const wsSelect = header.createEl("select", { cls: "kan-select kan-ws-select", attr: { "aria-label": "Workspace" } });
+    const typeSelect = header.createEl("select", { cls: "kan-select kan-type-select", attr: { "aria-label": "Board type" } });
+    for (const [v, t] of [["regular", "Boards"], ["template", "Templates"]]) {
+      const o = typeSelect.createEl("option", { text: t, value: v });
+      if ((this.plugin.settings.boardListType || "regular") === v) o.selected = true;
+    }
     const select = header.createEl("select", { cls: "kan-select" });
+    const menuBtn = header.createEl("button", { text: "⋯", cls: "kan-refresh", attr: { "aria-label": "Board actions" } });
     const searchBtn = header.createEl("button", { text: "🔍", cls: "kan-refresh", attr: { "aria-label": "Search" } });
     const refreshBtn = header.createEl("button", { text: "↻", cls: "kan-refresh", attr: { "aria-label": "Refresh" } });
+
+    const filters = el.createDiv({ cls: "kan-filters" });
+    const dueSel = filters.createEl("select", { cls: "kan-select", attr: { "aria-label": "Due filter" } });
+    dueSel.createEl("option", { text: "All due dates", value: "" });
+    for (const d of DUE_FILTERS) {
+      const o = dueSel.createEl("option", { text: d, value: d });
+      if (this.filterDue === d) o.selected = true;
+    }
+    dueSel.onchange = async () => {
+      this.filterDue = dueSel.value;
+      this.plugin.settings.boardDueFilter = dueSel.value;
+      await this.plugin.saveSettings();
+      await renderBoard();
+    };
+    const archivedToggle = filters.createEl("label", { cls: "kan-filter-check" });
+    const archCb = archivedToggle.createEl("input", { attr: { type: "checkbox" } });
+    archCb.checked = !!this.plugin.settings.showArchivedBoards;
+    archivedToggle.appendText(" Archived");
+    archCb.onchange = async () => {
+      this.plugin.settings.showArchivedBoards = archCb.checked;
+      await this.plugin.saveSettings();
+      await loadBoards();
+    };
+
     const body = el.createDiv({ cls: "kan-body" });
 
     const loadWorkspaces = async () => {
@@ -460,25 +991,88 @@ class KanBoardView extends ItemView {
       this.selectedBoardId = null;
       await loadBoards();
     };
+    typeSelect.onchange = async () => {
+      this.plugin.settings.boardListType = typeSelect.value;
+      await this.plugin.saveSettings();
+      this.selectedBoardId = null;
+      await loadBoards();
+    };
 
     const renderBoard = async () => {
       body.empty();
       body.setText("Loading…");
       let board;
-      try { board = await this.plugin.client.getBoard(this.selectedBoardId); }
+      try { board = await this.plugin.client.getBoard(this.selectedBoardId, this.boardFilters()); }
       catch (e) { body.setText("Error: " + e.message); return; }
+      this.currentBoard = board;
       body.empty();
-      const cols = body.createDiv({ cls: "kan-columns" });
-      for (const list of board.lists || []) {
-        const col = cols.createDiv({ cls: "kan-col" });
-        col.createDiv({ cls: "kan-col-title", text: `${list.name} (${(list.cards || []).length})` });
 
-        col.addEventListener("dragover", (ev) => { ev.preventDefault(); col.addClass("kan-drop-target"); });
+      // label/member filter chips from board
+      const chipRow = body.createDiv({ cls: "kan-filters" });
+      chipRow.createSpan({ text: "Labels: ", cls: "kan-filter-label" });
+      for (const l of board.labels || []) {
+        const on = this.filterLabelIds.includes(l.publicId);
+        const b = chipRow.createEl("button", { cls: "kan-label" + (on ? " is-on" : ""), text: l.name });
+        if (l.colourCode) b.style.background = l.colourCode + "33";
+        b.onclick = async () => {
+          if (on) this.filterLabelIds = this.filterLabelIds.filter((id) => id !== l.publicId);
+          else this.filterLabelIds.push(l.publicId);
+          await renderBoard();
+        };
+      }
+      const mems = (board.workspace && board.workspace.members) || [];
+      if (mems.length) {
+        chipRow.createSpan({ text: " Members: ", cls: "kan-filter-label" });
+        for (const m of mems) {
+          const on = this.filterMemberIds.includes(m.publicId);
+          const name = (m.user && m.user.name) || m.email || m.publicId;
+          const b = chipRow.createEl("button", { cls: on ? "is-on" : "", text: name.split(" ")[0] });
+          b.onclick = async () => {
+            if (on) this.filterMemberIds = this.filterMemberIds.filter((id) => id !== m.publicId);
+            else this.filterMemberIds.push(m.publicId);
+            await renderBoard();
+          };
+        }
+      }
+
+      const cols = body.createDiv({ cls: "kan-columns" });
+      const lists = board.lists || [];
+      lists.forEach((list, listIndex) => {
+        const col = cols.createDiv({ cls: "kan-col", attr: { draggable: "true" } });
+        const titleRow = col.createDiv({ cls: "kan-col-title-row" });
+        titleRow.createDiv({ cls: "kan-col-title", text: `${list.name} (${(list.cards || []).length})` });
+        titleRow.createEl("button", { text: "🗑", cls: "kan-icon-btn", attr: { title: "Delete list" } }).onclick = (ev) => {
+          ev.stopPropagation();
+          new KanConfirmModal(this.app, "Delete list", `Delete list "${list.name}" and its cards relationship?`, async () => {
+            await this.plugin.client.deleteList(list.publicId);
+            new Notice("List deleted.");
+            await renderBoard();
+          }).open();
+        };
+
+        col.addEventListener("dragstart", (ev) => {
+          if (ev.target.closest && ev.target.closest(".kan-card")) return;
+          ev.dataTransfer.setData("text/kan-list", list.publicId);
+          ev.dataTransfer.setData("text/kan-list-index", String(listIndex));
+        });
+        col.addEventListener("dragover", (ev) => {
+          ev.preventDefault();
+          if (ev.dataTransfer.types.includes("text/kan-list") || ev.dataTransfer.getData("text/kan-list"))
+            col.addClass("kan-drop-target");
+        });
         col.addEventListener("dragleave", () => col.removeClass("kan-drop-target"));
         col.addEventListener("drop", async (ev) => {
           ev.preventDefault();
           col.removeClass("kan-drop-target");
+          const listId = ev.dataTransfer.getData("text/kan-list");
           const cardId = ev.dataTransfer.getData("text/kan-card");
+          if (listId && listId !== list.publicId) {
+            try {
+              await this.plugin.client.updateList(listId, { index: listIndex });
+              await renderBoard();
+            } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+            return;
+          }
           if (!cardId) return;
           try {
             await this.plugin.client.updateCard(cardId, { listPublicId: list.publicId });
@@ -490,12 +1084,11 @@ class KanBoardView extends ItemView {
         for (const card of list.cards || []) {
           const c = col.createDiv({ cls: "kan-card", attr: { draggable: "true" } });
           c.addEventListener("dragstart", (ev) => {
+            ev.stopPropagation();
             ev.dataTransfer.setData("text/kan-card", card.publicId);
             c.addClass("kan-dragging");
           });
           c.addEventListener("dragend", () => c.removeClass("kan-dragging"));
-
-          // drop on a card = reorder to that card's position within its list
           c.addEventListener("dragover", (ev) => { ev.preventDefault(); ev.stopPropagation(); c.addClass("kan-drop-target"); });
           c.addEventListener("dragleave", () => c.removeClass("kan-drop-target"));
           c.addEventListener("drop", async (ev) => {
@@ -509,9 +1102,7 @@ class KanBoardView extends ItemView {
               await renderBoard();
             } catch (e) { new Notice("Kan error: " + e.message, 8000); }
           });
-
           c.addEventListener("click", () => new KanCardModal(this.app, this.plugin, card.publicId).open());
-
           c.createDiv({ cls: "kan-card-title", text: card.title });
           if (card.dueDate) c.createDiv({ cls: "kan-card-due", text: "Due: " + String(card.dueDate).slice(0, 10) });
           if ((card.members || []).length)
@@ -532,17 +1123,20 @@ class KanBoardView extends ItemView {
             }
           }
         }
-      }
+      });
     };
 
     const loadBoards = async () => {
       const ws = this.plugin.settings.workspaceId;
       if (!ws) { body.setText("Set workspace in Settings → Kan Sync."); return; }
-      try { this.boards = await this.plugin.client.getBoards(ws); }
+      const opts = { type: this.plugin.settings.boardListType || "regular" };
+      if (this.plugin.settings.showArchivedBoards) opts.archived = true;
+      try { this.boards = await this.plugin.client.getBoards(ws, opts); }
       catch (e) { body.setText("Error: " + e.message); return; }
       select.empty();
       for (const b of this.boards) {
-        const opt = select.createEl("option", { text: b.name });
+        const label = (b.favorite ? "★ " : "") + b.name + (b.isArchived ? " (archived)" : "");
+        const opt = select.createEl("option", { text: label });
         opt.value = b.publicId;
       }
       if (this.boards.length) {
@@ -552,12 +1146,80 @@ class KanBoardView extends ItemView {
       } else body.setText("No boards in this workspace yet.");
     };
 
+    menuBtn.onclick = () => this.openBoardMenu();
     select.onchange = async () => { this.selectedBoardId = select.value; await renderBoard(); };
     refreshBtn.onclick = async () => { await loadWorkspaces(); await loadBoards(); };
     searchBtn.onclick = () => new KanSearchModal(this.app, this.plugin).open();
     this.reload = loadBoards;
+    this.renderBoard = renderBoard;
     await loadWorkspaces();
     await loadBoards();
+  }
+
+  openBoardMenu() {
+    const board = this.currentBoard || this.boards.find((b) => b.publicId === this.selectedBoardId);
+    if (!board && !this.selectedBoardId) { new Notice("Select a board first."); return; }
+    const id = this.selectedBoardId;
+    const name = (board && board.name) || id;
+    new KanPromptModal(this.app, "Board actions: " + name, [
+      { key: "action", label: "Action", type: "select", value: "favorite", options: [
+        { value: "favorite", label: "Toggle favorite" },
+        { value: "archive", label: "Toggle archive" },
+        { value: "visibility", label: "Toggle visibility (public/private)" },
+        { value: "slug", label: "Set slug" },
+        { value: "move", label: "Move to another workspace" },
+        { value: "template", label: "Save as template board" },
+        { value: "fromTemplate", label: "Create new board from this (as source)" },
+        { value: "delete", label: "Delete board" },
+      ]},
+      { key: "slug", label: "Slug (for Set slug)", value: (board && board.slug) || "", placeholder: "my-board" },
+      { key: "targetWs", label: "Target workspace ID (for Move)", value: "", placeholder: "workspace publicId" },
+      { key: "newName", label: "New board name (from template)", value: name + " copy" },
+    ], async (v) => {
+      const client = this.plugin.client;
+      if (v.action === "favorite") {
+        await client.updateBoard(id, { favorite: !(board && board.favorite) });
+        new Notice("Favorite updated.");
+      } else if (v.action === "archive") {
+        await client.updateBoard(id, { isArchived: !(board && board.isArchived) });
+        new Notice("Archive updated.");
+      } else if (v.action === "visibility") {
+        const next = (board && board.visibility) === "public" ? "private" : "public";
+        await client.updateBoard(id, { visibility: next });
+        new Notice("Visibility: " + next);
+      } else if (v.action === "slug") {
+        if (!v.slug.trim()) { new Notice("Enter a slug."); return; }
+        try { await client.checkBoardSlug(id, v.slug.trim()); } catch (e) { /* may 400 if taken */ }
+        await client.updateBoard(id, { slug: v.slug.trim() });
+        new Notice("Slug updated.");
+      } else if (v.action === "move") {
+        if (!v.targetWs.trim()) { new Notice("Enter target workspace ID."); return; }
+        await client.moveBoard(id, v.targetWs.trim());
+        new Notice("Board moved.");
+      } else if (v.action === "template") {
+        await client.createBoard(this.plugin.settings.workspaceId, (v.newName || name) + " template", (board.lists || []).map((l) => l.name), {
+          type: "template",
+          sourceBoardPublicId: id,
+          labels: (board.labels || []).map((l) => l.name),
+        });
+        new Notice("Template board created.");
+      } else if (v.action === "fromTemplate") {
+        await client.createBoard(this.plugin.settings.workspaceId, v.newName || (name + " copy"), [], {
+          type: "regular",
+          sourceBoardPublicId: id,
+        });
+        new Notice("Board created from template/source.");
+      } else if (v.action === "delete") {
+        new KanConfirmModal(this.app, "Delete board", `Permanently delete board "${name}"?`, async () => {
+          await client.deleteBoard(id);
+          this.selectedBoardId = null;
+          new Notice("Board deleted.");
+          if (this.reload) await this.reload();
+        }).open();
+        return;
+      }
+      if (this.reload) await this.reload();
+    }).open();
   }
 }
 
@@ -613,10 +1275,7 @@ class KanSyncPlugin extends Plugin {
         if (!id) { new Notice("No %%kan:ID%% marker on this line — push first."); return; }
         try {
           const card = await this.client.getCard(id);
-          const listId = card.list && card.list.publicId;
-          if (!listId) { new Notice("Could not resolve card list."); return; }
-          const dup = await this.client.duplicateCard(id, listId, {});
-          new Notice(`Duplicated card${dup && dup.publicId ? ` (${dup.publicId})` : ""}.`);
+          new KanDuplicateModal(this.app, this, card).open();
         } catch (e) { new Notice("Kan error: " + e.message, 8000); console.error(e); }
       },
     });
@@ -632,12 +1291,123 @@ class KanSyncPlugin extends Plugin {
         const line = editor.getLine(lineNo);
         const id = (line.match(MARKER_RE) || [])[1];
         if (!id) { new Notice("No %%kan:ID%% marker on this line."); return; }
-        try {
+        new KanConfirmModal(this.app, "Delete card", "Delete this card in Kan?", async () => {
           await this.client.deleteCard(id);
           const cleaned = line.replace(MARKER_RE, "").replace(/\s+$/, "");
           editor.setLine(lineNo, cleaned);
           new Notice("Card deleted in Kan.");
-        } catch (e) { new Notice("Kan error: " + e.message, 8000); console.error(e); }
+        }).open();
+      },
+    });
+    this.addCommand({
+      id: "test-connection",
+      name: "Test connection",
+      callback: () => this.testConnection(),
+    });
+    this.addCommand({
+      id: "import-trello",
+      name: "Import boards from Trello",
+      callback: () => new KanImportModal(this.app, this, "trello").open(),
+    });
+    this.addCommand({
+      id: "import-github",
+      name: "Import projects from GitHub",
+      callback: () => new KanImportModal(this.app, this, "github").open(),
+    });
+    this.addCommand({
+      id: "invite-member",
+      name: "Invite member to workspace",
+      callback: () => {
+        new KanPromptModal(this.app, "Invite member", [
+          { key: "email", label: "Email", value: "", placeholder: "user@example.com" },
+        ], async (v) => {
+          await this.client.inviteMember(this.settings.workspaceId, v.email.trim());
+          new Notice("Invite sent.");
+        }).open();
+      },
+    });
+    this.addCommand({
+      id: "copy-invite-link",
+      name: "Copy workspace invite link",
+      callback: async () => {
+        try {
+          let link = await this.client.getInviteLink(this.settings.workspaceId);
+          if (!link || !(link.url || link.code || link.inviteCode)) {
+            link = await this.client.createInviteLink(this.settings.workspaceId);
+          }
+          const text = link.url || link.code || link.inviteCode || JSON.stringify(link);
+          await navigator.clipboard.writeText(String(text));
+          new Notice("Invite link copied.");
+        } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+      },
+    });
+    this.addCommand({
+      id: "archive-board",
+      name: "Archive / unarchive board for active note",
+      callback: async () => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) { new Notice("No active note."); return; }
+        const id = this.boardIdForFile(file);
+        if (!id) { new Notice("Push once to store kan_board_id."); return; }
+        try {
+          const board = await this.client.getBoard(id);
+          await this.client.updateBoard(id, { isArchived: !board.isArchived });
+          new Notice(board.isArchived ? "Board unarchived." : "Board archived.");
+        } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+      },
+    });
+    this.addCommand({
+      id: "favorite-board",
+      name: "Favorite / unfavorite board for active note",
+      callback: async () => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) { new Notice("No active note."); return; }
+        const id = this.boardIdForFile(file);
+        if (!id) { new Notice("Push once to store kan_board_id."); return; }
+        try {
+          const board = await this.client.getBoard(id);
+          await this.client.updateBoard(id, { favorite: !board.favorite });
+          new Notice(board.favorite ? "Removed favorite." : "Board favorited.");
+        } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+      },
+    });
+    this.addCommand({
+      id: "create-from-template",
+      name: "Create board from template (active note)",
+      callback: async () => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) { new Notice("No active note."); return; }
+        const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+        const templateId = fm && fm.kan_template_id;
+        if (!templateId) { new Notice("Set kan_template_id in frontmatter."); return; }
+        const name = this.boardNameForFile(file);
+        try {
+          const created = await this.client.createBoard(this.settings.workspaceId, name, [], {
+            type: "regular",
+            sourceBoardPublicId: templateId,
+          });
+          await this.ensureBoardIdFrontmatter(file, created.publicId);
+          new Notice("Board created from template.");
+        } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+      },
+    });
+    this.addCommand({
+      id: "save-as-template",
+      name: "Save linked board as template",
+      callback: async () => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) { new Notice("No active note."); return; }
+        const id = this.boardIdForFile(file);
+        if (!id) { new Notice("Push once to store kan_board_id."); return; }
+        try {
+          const board = await this.client.getBoard(id);
+          await this.client.createBoard(this.settings.workspaceId, board.name + " template", (board.lists || []).map((l) => l.name), {
+            type: "template",
+            sourceBoardPublicId: id,
+            labels: (board.labels || []).map((l) => l.name),
+          });
+          new Notice("Template created.");
+        } catch (e) { new Notice("Kan error: " + e.message, 8000); }
       },
     });
 
@@ -712,9 +1482,15 @@ class KanSyncPlugin extends Plugin {
         console.warn("Kan: stored kan_board_id not found, falling back to name", e);
       }
     }
+    const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    const templateId = fm && fm.kan_template_id;
     let stub = await this.findBoardByName(boardName);
     if (!stub) {
-      const created = await this.client.createBoard(this.settings.workspaceId, boardName, listNames || []);
+      const created = await this.client.createBoard(this.settings.workspaceId, boardName, listNames || [], {
+        type: "regular",
+        sourceBoardPublicId: templateId || undefined,
+        labels: Array.isArray(fm && fm.kan_labels) ? fm.kan_labels : [],
+      });
       stub = { publicId: created.publicId, name: boardName };
     }
     return { stub, board: null };
@@ -864,6 +1640,38 @@ class KanSyncPlugin extends Plugin {
     } catch (e) { new Notice("Kan error: " + e.message, 8000); console.error(e); }
   }
 
+  async saveAttachmentToVault(attachment) {
+    const name = attachment.originalFilename || attachment.filename || attachment.s3Key || "attachment.bin";
+    const url = attachment.url;
+    if (!url) throw new Error("Attachment has no download URL.");
+    const res = await requestUrl({ url, method: "GET", throw: false });
+    if (res.status >= 400) throw new Error(`Download failed (${res.status})`);
+    const folder = "Kan Sync Attachments";
+    if (!(await this.app.vault.adapter.exists(folder))) await this.app.vault.createFolder(folder);
+    let path = `${folder}/${name}`;
+    let n = 1;
+    while (await this.app.vault.adapter.exists(path)) {
+      const parts = name.split(".");
+      const ext = parts.length > 1 ? "." + parts.pop() : "";
+      path = `${folder}/${parts.join(".")}-${n}${ext}`;
+      n++;
+    }
+    const data = res.arrayBuffer;
+    await this.app.vault.createBinary(path, data);
+    return path;
+  }
+
+  async testConnection() {
+    try {
+      const health = await this.client.health();
+      let me = null;
+      try { me = await this.client.getMe(); } catch (e) { /* optional */ }
+      const who = me && (me.name || me.email || me.publicId);
+      new Notice(`Kan OK${who ? " — " + who : ""}${health && health.status ? " (" + health.status + ")" : ""}.`);
+      console.log("Kan health:", health, "user:", me);
+    } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+  }
+
   async pushChecklist() {
     const file = this.app.workspace.getActiveFile();
     if (!file) { new Notice("No active note."); return; }
@@ -925,6 +1733,31 @@ class KanSyncPlugin extends Plugin {
       // Refresh board after list changes
       board = await this.client.getBoard(board.publicId);
       for (const l of board.lists || []) listMap[l.name.toLowerCase()] = l.publicId;
+
+      // Reorder lists to match heading order in the note
+      if (this.settings.reorderLists) {
+        for (let i = 0; i < sections.length; i++) {
+          const lid = listMap[sections[i].name.toLowerCase()];
+          if (lid) {
+            try { await this.client.updateList(lid, { index: i }); } catch (e) { console.warn("Kan list reorder:", e); }
+          }
+        }
+        board = await this.client.getBoard(board.publicId);
+        for (const l of board.lists || []) listMap[l.name.toLowerCase()] = l.publicId;
+      }
+
+      // Opt-in: delete lists that have no matching heading and no cards from this note
+      if (this.settings.allowDeletes) {
+        const wantLists = new Set(sections.map((s) => s.name.toLowerCase()));
+        for (const l of board.lists || []) {
+          if (wantLists.has(l.name.toLowerCase())) continue;
+          if ((l.cards || []).length === 0) {
+            try { await this.client.deleteList(l.publicId); } catch (e) { console.warn("Kan list delete:", e); }
+          }
+        }
+        board = await this.client.getBoard(board.publicId);
+        for (const l of board.lists || []) listMap[l.name.toLowerCase()] = l.publicId;
+      }
 
       const doneNames = this.settings.doneLists.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
       const firstDoneList = (board.lists || []).find((l) => doneNames.includes(l.name.toLowerCase()));
@@ -1038,7 +1871,10 @@ class KanSyncPlugin extends Plugin {
           const desc = this.settings.syncDescription
             ? buildCardDescription(file.path, item.description)
             : buildCardDescription(file.path, "");
-          const nc = await this.client.createCard(listId, item.title, desc, toIsoDue(item.due), labelIds, memberIds);
+          const nc = await this.client.createCard(
+            listId, item.title, desc, toIsoDue(item.due), labelIds, memberIds,
+            this.settings.newCardPosition || "end"
+          );
           created++;
           if (nc && nc.publicId) noteCardIds.add(nc.publicId);
           if (this.settings.useIdMarkers && nc && nc.publicId) markers.push({ lineNo: item.lineNo, id: nc.publicId });
@@ -1324,6 +2160,24 @@ class KanSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Reorder lists to match heading order")
+      .setDesc("On push, set list index to match ## heading order in the note.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.reorderLists !== false)
+          .onChange(async (v) => { this.plugin.settings.reorderLists = v; await this.plugin.saveSettings(); })
+      );
+
+    new Setting(containerEl)
+      .setName("New card position")
+      .setDesc("Where newly created cards are inserted in a list.")
+      .addDropdown((d) =>
+        d.addOption("end", "End of list")
+          .addOption("start", "Start of list")
+          .setValue(this.plugin.settings.newCardPosition || "end")
+          .onChange(async (v) => { this.plugin.settings.newCardPosition = v; await this.plugin.saveSettings(); })
+      );
+
+    new Setting(containerEl)
       .setName("Allow deletes on push")
       .setDesc("Off by default. When on: removing a tag/mention/sub-item or a whole synced item from the note removes the matching label/member/checklist item/card in Kan. Also enables the Delete linked card command.")
       .addToggle((t) =>
@@ -1421,6 +2275,359 @@ class KanSettingTab extends PluginSettingTab {
           .setValue(String(this.plugin.settings.autoSyncMinutes))
           .onChange(async (v) => { this.plugin.settings.autoSyncMinutes = Math.max(0, parseInt(v) || 0); await this.plugin.saveSettings(); })
       );
+
+    this.renderAdmin(containerEl);
+  }
+
+  renderAdmin(containerEl) {
+    const p = this.plugin;
+    const ws = () => p.settings.workspaceId;
+
+    containerEl.createEl("h2", { text: "Account" });
+    new Setting(containerEl)
+      .setName("Test connection")
+      .setDesc("Calls /health and /users/me.")
+      .addButton((b) => b.setButtonText("Test").onClick(() => p.testConnection()));
+    new Setting(containerEl)
+      .setName("Update display name")
+      .addButton((b) => b.setButtonText("Edit").onClick(() => {
+        new KanPromptModal(this.app, "Update user", [
+          { key: "name", label: "Name", value: "" },
+        ], async (v) => {
+          await p.client.updateUser({ name: v.name });
+          new Notice("Profile updated.");
+        }).open();
+      }));
+    new Setting(containerEl)
+      .setName("Set password")
+      .setDesc("For accounts created via magic link.")
+      .addButton((b) => b.setButtonText("Set").setWarning().onClick(() => {
+        new KanPromptModal(this.app, "Set password", [
+          { key: "newPassword", label: "New password", type: "password", value: "" },
+        ], async (v) => {
+          await p.client.setPassword(v.newPassword);
+          new Notice("Password set.");
+        }).open();
+      }));
+
+    containerEl.createEl("h2", { text: "Workspace admin" });
+    new Setting(containerEl)
+      .setName("Create workspace")
+      .addButton((b) => b.setButtonText("Create").onClick(() => {
+        new KanPromptModal(this.app, "Create workspace", [
+          { key: "name", label: "Name", value: "" },
+          { key: "slug", label: "Slug", value: "" },
+          { key: "description", label: "Description", type: "textarea", value: "" },
+        ], async (v) => {
+          if (v.slug) {
+            try { await p.client.checkWorkspaceSlug(v.slug); } catch (e) { /* continue */ }
+          }
+          const created = await p.client.createWorkspace({ name: v.name, slug: v.slug || undefined, description: v.description || undefined });
+          if (created && created.publicId) {
+            p.settings.workspaceId = created.publicId;
+            await p.saveSettings();
+          }
+          new Notice("Workspace created.");
+          this.display();
+        }).open();
+      }));
+    new Setting(containerEl)
+      .setName("Update current workspace")
+      .addButton((b) => b.setButtonText("Edit").onClick(() => {
+        new KanPromptModal(this.app, "Update workspace", [
+          { key: "name", label: "Name", value: "" },
+          { key: "slug", label: "Slug", value: "" },
+          { key: "description", label: "Description", type: "textarea", value: "" },
+          { key: "weekStartDay", label: "Week start day (0-6)", value: "1" },
+        ], async (v) => {
+          const patch = {};
+          if (v.name) patch.name = v.name;
+          if (v.slug) patch.slug = v.slug;
+          if (v.description) patch.description = v.description;
+          if (v.weekStartDay !== "") patch.weekStartDay = parseInt(v.weekStartDay, 10);
+          await p.client.updateWorkspace(ws(), patch);
+          new Notice("Workspace updated.");
+        }).open();
+      }));
+    new Setting(containerEl)
+      .setName("Invite member")
+      .addButton((b) => b.setButtonText("Invite").onClick(() => {
+        new KanPromptModal(this.app, "Invite member", [
+          { key: "email", label: "Email", value: "" },
+        ], async (v) => {
+          await p.client.inviteMember(ws(), v.email.trim());
+          new Notice("Invite sent.");
+        }).open();
+      }));
+    new Setting(containerEl)
+      .setName("Invite link")
+      .setDesc("Create, copy, or deactivate the workspace invite link.")
+      .addButton((b) => b.setButtonText("Copy").onClick(async () => {
+        try {
+          let link = await p.client.getInviteLink(ws());
+          if (!link || !(link.url || link.code)) link = await p.client.createInviteLink(ws());
+          await navigator.clipboard.writeText(String(link.url || link.code || JSON.stringify(link)));
+          new Notice("Copied.");
+        } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+      }))
+      .addButton((b) => b.setButtonText("Deactivate").setWarning().onClick(() => {
+        new KanConfirmModal(this.app, "Deactivate invite", "Deactivate the active invite link?", async () => {
+          await p.client.deactivateInviteLink(ws());
+          new Notice("Invite link deactivated.");
+        }).open();
+      }));
+    new Setting(containerEl)
+      .setName("Accept invite code")
+      .addButton((b) => b.setButtonText("Accept").onClick(() => {
+        new KanPromptModal(this.app, "Accept invite", [
+          { key: "inviteCode", label: "Invite code", value: "" },
+        ], async (v) => {
+          await p.client.acceptInvite(v.inviteCode.trim());
+          new Notice("Invite accepted.");
+        }).open();
+      }));
+    new Setting(containerEl)
+      .setName("Manage member")
+      .setDesc("Update role or remove a member by public ID.")
+      .addButton((b) => b.setButtonText("Role").onClick(() => {
+        new KanPromptModal(this.app, "Update member role", [
+          { key: "memberId", label: "Member public ID", value: "" },
+          { key: "role", label: "Role", value: "member", type: "select", options: [
+            { value: "admin", label: "admin" }, { value: "member", label: "member" }, { value: "guest", label: "guest" },
+          ]},
+        ], async (v) => {
+          await p.client.updateMemberRole(ws(), v.memberId.trim(), v.role);
+          new Notice("Role updated.");
+        }).open();
+      }))
+      .addButton((b) => b.setButtonText("Remove").setWarning().onClick(() => {
+        new KanPromptModal(this.app, "Remove member", [
+          { key: "memberId", label: "Member public ID", value: "" },
+        ], async (v) => {
+          new KanConfirmModal(this.app, "Remove member", "Remove this member from the workspace?", async () => {
+            await p.client.removeMember(ws(), v.memberId.trim());
+            new Notice("Member removed.");
+          }).open();
+        }).open();
+      }));
+    new Setting(containerEl)
+      .setName("My permissions")
+      .addButton((b) => b.setButtonText("Show").onClick(async () => {
+        try {
+          const perms = await p.client.getMyPermissions(ws());
+          console.log("Kan permissions:", perms);
+          new Notice("Permissions logged to console.");
+        } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+      }));
+
+    containerEl.createEl("h2", { text: "Roles & permissions" });
+    new Setting(containerEl)
+      .setName("List roles")
+      .addButton((b) => b.setButtonText("Log roles").onClick(async () => {
+        try {
+          console.log("roles", await p.client.getRoles(ws()));
+          console.log("role permissions", await p.client.getWorkspaceRolePermissions(ws()));
+          new Notice("Roles logged to console.");
+        } catch (e) { new Notice("Kan error: " + e.message, 8000); }
+      }));
+    new Setting(containerEl)
+      .setName("Grant / revoke role permission")
+      .addButton((b) => b.setButtonText("Grant").onClick(() => {
+        new KanPromptModal(this.app, "Grant role permission", [
+          { key: "roleId", label: "Role public ID", value: "" },
+          { key: "permission", label: "Permission", value: "" },
+        ], async (v) => {
+          await p.client.grantRolePermission(ws(), v.roleId.trim(), v.permission.trim());
+          new Notice("Granted.");
+        }).open();
+      }))
+      .addButton((b) => b.setButtonText("Revoke").onClick(() => {
+        new KanPromptModal(this.app, "Revoke role permission", [
+          { key: "roleId", label: "Role public ID", value: "" },
+          { key: "permission", label: "Permission", value: "" },
+        ], async (v) => {
+          await p.client.revokeRolePermission(ws(), v.roleId.trim(), v.permission.trim());
+          new Notice("Revoked.");
+        }).open();
+      }));
+    new Setting(containerEl)
+      .setName("Member permission overrides")
+      .addButton((b) => b.setButtonText("Grant").onClick(() => {
+        new KanPromptModal(this.app, "Grant member permission", [
+          { key: "memberId", label: "Member public ID", value: "" },
+          { key: "permission", label: "Permission", value: "" },
+        ], async (v) => {
+          await p.client.grantMemberPermission(ws(), v.memberId.trim(), v.permission.trim());
+          new Notice("Granted.");
+        }).open();
+      }))
+      .addButton((b) => b.setButtonText("Revoke").onClick(() => {
+        new KanPromptModal(this.app, "Revoke member permission", [
+          { key: "memberId", label: "Member public ID", value: "" },
+          { key: "permission", label: "Permission", value: "" },
+        ], async (v) => {
+          await p.client.revokeMemberPermission(ws(), v.memberId.trim(), v.permission.trim());
+          new Notice("Revoked.");
+        }).open();
+      }));
+    new Setting(containerEl)
+      .setName("Reset permission overrides")
+      .addButton((b) => b.setButtonText("One member").onClick(() => {
+        new KanPromptModal(this.app, "Reset member permissions", [
+          { key: "memberId", label: "Member public ID", value: "" },
+        ], async (v) => {
+          await p.client.resetMemberPermissions(ws(), v.memberId.trim());
+          new Notice("Reset.");
+        }).open();
+      }))
+      .addButton((b) => b.setButtonText("All members").setWarning().onClick(() => {
+        new KanConfirmModal(this.app, "Reset all overrides", "Clear all member permission overrides in this workspace?", async () => {
+          await p.client.resetAllMemberPermissions(ws());
+          new Notice("All overrides reset.");
+        }).open();
+      }));
+
+    containerEl.createEl("h2", { text: "Webhooks" });
+    containerEl.createDiv({
+      cls: "setting-item-description",
+      text: "Manage Kan webhooks here. Obsidian cannot receive inbound webhook HTTP — use an external relay if you need live event→vault sync.",
+    });
+    new Setting(containerEl)
+      .setName("List webhooks")
+      .addButton((b) => b.setButtonText("Log").onClick(async () => {
+        try { console.log(await p.client.getWebhooks(ws())); new Notice("Webhooks logged."); }
+        catch (e) { new Notice("Kan error: " + e.message, 8000); }
+      }));
+    new Setting(containerEl)
+      .setName("Create webhook")
+      .addButton((b) => b.setButtonText("Create").onClick(() => {
+        new KanPromptModal(this.app, "Create webhook", [
+          { key: "name", label: "Name", value: "Obsidian relay" },
+          { key: "url", label: "URL", value: "https://" },
+          { key: "secret", label: "Secret (optional)", value: "" },
+          { key: "events", label: "Events (comma-separated)", value: WEBHOOK_EVENTS.join(",") },
+        ], async (v) => {
+          const events = v.events.split(",").map((s) => s.trim()).filter(Boolean);
+          await p.client.createWebhook(ws(), { name: v.name, url: v.url, secret: v.secret || undefined, events });
+          new Notice("Webhook created.");
+        }).open();
+      }));
+    new Setting(containerEl)
+      .setName("Update / test / delete webhook")
+      .addButton((b) => b.setButtonText("Update").onClick(() => {
+        new KanPromptModal(this.app, "Update webhook", [
+          { key: "id", label: "Webhook public ID", value: "" },
+          { key: "name", label: "Name", value: "" },
+          { key: "url", label: "URL", value: "" },
+          { key: "active", label: "Active", type: "toggle", value: true },
+          { key: "events", label: "Events (comma-separated)", value: WEBHOOK_EVENTS.join(",") },
+        ], async (v) => {
+          await p.client.updateWebhook(ws(), v.id.trim(), {
+            name: v.name || undefined,
+            url: v.url || undefined,
+            active: v.active,
+            events: v.events.split(",").map((s) => s.trim()).filter(Boolean),
+          });
+          new Notice("Webhook updated.");
+        }).open();
+      }))
+      .addButton((b) => b.setButtonText("Test").onClick(() => {
+        new KanPromptModal(this.app, "Test webhook", [
+          { key: "id", label: "Webhook public ID", value: "" },
+        ], async (v) => {
+          await p.client.testWebhook(ws(), v.id.trim());
+          new Notice("Test sent.");
+        }).open();
+      }))
+      .addButton((b) => b.setButtonText("Delete").setWarning().onClick(() => {
+        new KanPromptModal(this.app, "Delete webhook", [
+          { key: "id", label: "Webhook public ID", value: "" },
+        ], async (v) => {
+          new KanConfirmModal(this.app, "Delete webhook", "Delete this webhook?", async () => {
+            await p.client.deleteWebhook(ws(), v.id.trim());
+            new Notice("Deleted.");
+          }).open();
+        }).open();
+      }));
+
+    containerEl.createEl("h2", { text: "Integrations & imports" });
+    new Setting(containerEl)
+      .setName("Integration providers")
+      .addButton((b) => b.setButtonText("List").onClick(async () => {
+        try { console.log(await p.client.getIntegrationProviders()); new Notice("Providers logged."); }
+        catch (e) { new Notice("Kan error: " + e.message, 8000); }
+      }));
+    new Setting(containerEl)
+      .setName("Connect integration")
+      .addButton((b) => b.setButtonText("Authorize").onClick(() => {
+        new KanPromptModal(this.app, "Authorize integration", [
+          { key: "provider", label: "Provider", value: "trello", type: "select", options: [
+            { value: "trello", label: "trello" }, { value: "github", label: "github" },
+          ]},
+        ], async (v) => {
+          const res = await p.client.getIntegrationAuthorizeUrl(v.provider);
+          const url = res.url || res.authorizationUrl || res;
+          if (typeof url === "string") window.open(url);
+          else { console.log(res); new Notice("Authorize URL logged to console."); }
+        }).open();
+      }))
+      .addButton((b) => b.setButtonText("Disconnect").setWarning().onClick(() => {
+        new KanPromptModal(this.app, "Disconnect integration", [
+          { key: "provider", label: "Provider", value: "trello" },
+        ], async (v) => {
+          await p.client.disconnectIntegration(v.provider.trim());
+          new Notice("Disconnected.");
+        }).open();
+      }));
+    new Setting(containerEl)
+      .setName("Import from Trello")
+      .addButton((b) => b.setButtonText("Import").onClick(() => new KanImportModal(this.app, p, "trello").open()));
+    new Setting(containerEl)
+      .setName("Import from GitHub")
+      .addButton((b) => b.setButtonText("Import").onClick(() => new KanImportModal(this.app, p, "github").open()));
+
+    containerEl.createEl("h2", { text: "Labels (board)" });
+    new Setting(containerEl)
+      .setName("Update / delete label by ID")
+      .addButton((b) => b.setButtonText("Update").onClick(() => {
+        new KanPromptModal(this.app, "Update label", [
+          { key: "id", label: "Label public ID", value: "" },
+          { key: "name", label: "Name", value: "" },
+          { key: "colourCode", label: "Colour (#hex)", value: "#3498db" },
+        ], async (v) => {
+          await p.client.updateLabel(v.id.trim(), { name: v.name, colourCode: v.colourCode });
+          new Notice("Label updated.");
+        }).open();
+      }))
+      .addButton((b) => b.setButtonText("Delete").setWarning().onClick(() => {
+        new KanPromptModal(this.app, "Delete label", [
+          { key: "id", label: "Label public ID", value: "" },
+        ], async (v) => {
+          new KanConfirmModal(this.app, "Delete label", "Delete this label from the board?", async () => {
+            await p.client.deleteLabel(v.id.trim());
+            new Notice("Label deleted.");
+          }).open();
+        }).open();
+      }));
+
+    containerEl.createEl("h2", { text: "Danger zone" });
+    new Setting(containerEl)
+      .setName("Delete current workspace")
+      .setDesc("Irreversible. Requires typing the workspace ID.")
+      .addButton((b) => b.setButtonText("Delete workspace").setWarning().onClick(() => {
+        new KanPromptModal(this.app, "Delete workspace", [
+          { key: "confirmId", label: `Type workspace ID to confirm (${ws()})`, value: "" },
+        ], async (v) => {
+          if (v.confirmId.trim() !== ws()) { new Notice("ID did not match."); return; }
+          new KanConfirmModal(this.app, "Final confirm", "Really delete this workspace?", async () => {
+            await p.client.deleteWorkspace(ws());
+            p.settings.workspaceId = "";
+            await p.saveSettings();
+            new Notice("Workspace deleted.");
+            this.display();
+          }).open();
+        }).open();
+      }));
   }
 }
 
