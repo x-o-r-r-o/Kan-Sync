@@ -1,10 +1,11 @@
-/* Kan Sync v0.5.2 — plugin for Kan.bn
+/* Kan Sync v0.6.0 — plugin for Kan.bn
  * https://github.com/x-o-r-r-o/
  *
+ * v0.6.0: description sync, richer pull (due/#tags/@mentions), clear due date,
+ * optional deletes, board/list rename, members on create, duplicate card.
  * v0.5.2: README disclosures; release with artifact attestations.
  * v0.5.1: Fix community manifest description (remove banned word).
- * v0.5.0: @person member sync, card detail modal (description, checklists,
- * attachments, comments, activity), multi-workspace switcher in board view.
+ * v0.5.0: @person member sync, card detail modal, multi-workspace switcher.
  */
 
 const { Plugin, ItemView, PluginSettingTab, Setting, Notice, requestUrl, Modal, SuggestModal } = require("obsidian");
@@ -15,6 +16,7 @@ const DUE_RE = /(?:📅|@due\()\s*(\d{4}-\d{2}-\d{2})\)?/u;
 const TAG_RE = /(^|\s)#([\w/-]+)/g;
 const MENTION_RE = /(^|\s)@([\w.-]+)/g;
 const LABEL_COLOURS = ["#e74c3c", "#e67e22", "#f1c40f", "#2ecc71", "#1abc9c", "#3498db", "#9b59b6", "#34495e"];
+const DESC_PREFIX = "From Obsidian: ";
 
 const DEFAULT_SETTINGS = {
   apiKey: "",
@@ -32,6 +34,13 @@ const DEFAULT_SETTINGS = {
   includeTitlesInStatus: true,
   syncSubtasks: true,
   syncMembers: true,
+  syncDescription: true,
+  pullDueDates: true,
+  pullTags: true,
+  pullMentions: true,
+  allowDeletes: false,
+  renameBoard: true,
+  renameLists: true,
 };
 
 /* ---------------- API client ---------------- */
@@ -69,18 +78,31 @@ class KanClient {
     return this.req("POST", `/workspaces/${wsId}/boards`, { name, lists: listNames, labels: [] });
   }
   createList(boardId, name) { return this.req("POST", "/lists", { name, boardPublicId: boardId }); }
-  createCard(listId, title, description, dueDate, labelPublicIds) {
+  updateList(listId, patch) { return this.req("PUT", `/lists/${listId}`, patch); }
+  updateBoard(boardId, patch) { return this.req("PUT", `/boards/${boardId}`, patch); }
+  createCard(listId, title, description, dueDate, labelPublicIds, memberPublicIds) {
     return this.req("POST", "/cards", {
       title: title.slice(0, 2000),
       description: (description || "").slice(0, 10000),
       listPublicId: listId,
       labelPublicIds: labelPublicIds || [],
-      memberPublicIds: [],
+      memberPublicIds: memberPublicIds || [],
       position: "end",
       dueDate: dueDate || null,
     });
   }
   updateCard(cardId, patch) { return this.req("PUT", `/cards/${cardId}`, patch); }
+  deleteCard(cardId) { return this.req("DELETE", `/cards/${cardId}`); }
+  duplicateCard(cardId, listPublicId, opts) {
+    opts = opts || {};
+    return this.req("POST", `/cards/${cardId}/duplicate`, {
+      listPublicId,
+      copyLabels: opts.copyLabels !== false,
+      copyMembers: opts.copyMembers !== false,
+      copyChecklists: opts.copyChecklists !== false,
+      title: opts.title,
+    });
+  }
   createLabel(boardId, name, colourCode) {
     return this.req("POST", "/labels", { name: name.slice(0, 36), boardPublicId: boardId, colourCode });
   }
@@ -88,6 +110,7 @@ class KanClient {
   addComment(cardId, comment) { return this.req("POST", `/cards/${cardId}/comments`, { comment }); }
   createChecklist(cardId, name) { return this.req("POST", `/cards/${cardId}/checklists`, { name: name.slice(0, 255) }); }
   addChecklistItem(checklistId, title) { return this.req("POST", `/checklists/${checklistId}/items`, { title: title.slice(0, 500) }); }
+  deleteChecklistItem(itemId) { return this.req("DELETE", `/checklists/items/${itemId}`); }
   search(wsId, query, limit) {
     return this.req("GET", `/workspaces/${wsId}/search?query=${encodeURIComponent(query.slice(0, 100))}&limit=${limit || 20}`);
   }
@@ -103,6 +126,7 @@ class KanClient {
       s3Key, filename: filename.slice(0, 255), originalFilename: filename.slice(0, 255), contentType, size,
     });
   }
+  deleteAttachment(attachmentId) { return this.req("DELETE", `/attachments/${attachmentId}`); }
   // presigned S3 PUT — must NOT carry the Kan Authorization header
   async uploadToPresigned(url, data, contentType) {
     const res = await requestUrl({ url, method: "PUT", headers: { "Content-Type": contentType }, body: data, throw: false });
@@ -137,7 +161,49 @@ function labelColour(name) {
 function toIsoDue(ymd) { return ymd ? new Date(ymd + "T12:00:00.000Z").toISOString() : null; }
 function normTitle(s) { return cleanText(s).toLowerCase(); }
 
-// Parse note → sections with items and nested sub-items.
+function buildCardDescription(notePath, body) {
+  const header = DESC_PREFIX + notePath;
+  const text = (body || "").trim();
+  return text ? (header + "\n\n" + text).slice(0, 10000) : header;
+}
+
+function memberHandle(m) {
+  const name = (m.user && m.user.name) || "";
+  if (name) return name.split(/\s+/)[0].toLowerCase().replace(/[^a-z0-9._-]/gi, "");
+  const email = (m.email || "").split("@")[0];
+  return email.toLowerCase().replace(/[^a-z0-9._-]/gi, "") || null;
+}
+
+/** Rebuild checklist item meta (due / tags / mentions / marker) from Kan card data. */
+function enrichChecklistLine(line, card, settings) {
+  const m = line.match(/^(\s*-\s*\[(?: |x|X)\]\s+)(.*)$/);
+  if (!m) return line;
+  const prefix = m[1];
+  let rest = m[2];
+  const marker = (rest.match(MARKER_RE) || [])[0] || (card.publicId ? ` %%kan:${card.publicId}%%` : "");
+  rest = rest.replace(MARKER_RE, "").replace(DUE_RE, "").replace(TAG_RE, " ").replace(MENTION_RE, " ");
+  rest = rest.replace(/\s+/g, " ").trim();
+
+  const bits = [rest];
+  if (settings.pullDueDates) {
+    if (card.dueDate) bits.push("📅 " + String(card.dueDate).slice(0, 10));
+  }
+  if (settings.pullTags) {
+    for (const l of card.labels || []) {
+      const tag = String(l.name || "").replace(/\s+/g, "-");
+      if (tag) bits.push("#" + tag);
+    }
+  }
+  if (settings.pullMentions) {
+    for (const mem of card.members || []) {
+      const h = memberHandle(mem);
+      if (h) bits.push("@" + h);
+    }
+  }
+  return prefix + bits.join(" ") + (marker ? (marker.startsWith(" ") ? marker : " " + marker.trim()) : "");
+}
+
+// Parse note → sections with items, nested sub-items, and description lines.
 function parseNote(content, defaultListName) {
   const lines = content.split("\n");
   const sections = [];
@@ -158,26 +224,36 @@ function parseNote(content, defaultListName) {
     }
 
     const m = line.match(/^(\s*)-\s*\[( |x|X)\]\s+(.*)/);
-    if (!m) return;
-    const indent = m[1].length;
-    const rest = m[3];
-    const kanId = (rest.match(MARKER_RE) || [])[1] || null;
-    const due = (rest.match(DUE_RE) || [])[1] || null;
-    const tags = [];
-    let t;
-    const tagRe = new RegExp(TAG_RE.source, "g");
-    while ((t = tagRe.exec(rest)) !== null) tags.push(t[2]);
-    const mentions = [];
-    const menRe = new RegExp(MENTION_RE.source, "g");
-    while ((t = menRe.exec(rest)) !== null) mentions.push(t[2]);
-    const title = cleanText(rest);
-    if (!title) return;
+    if (m) {
+      const indent = m[1].length;
+      const rest = m[3];
+      const kanId = (rest.match(MARKER_RE) || [])[1] || null;
+      const due = (rest.match(DUE_RE) || [])[1] || null;
+      const tags = [];
+      let t;
+      const tagRe = new RegExp(TAG_RE.source, "g");
+      while ((t = tagRe.exec(rest)) !== null) tags.push(t[2]);
+      const mentions = [];
+      const menRe = new RegExp(MENTION_RE.source, "g");
+      while ((t = menRe.exec(rest)) !== null) mentions.push(t[2]);
+      const title = cleanText(rest);
+      if (!title) return;
 
-    if (indent === 0) {
-      lastTopItem = { done: m[2] !== " ", title, kanId, due, tags, mentions, lineNo, children: [] };
-      current.items.push(lastTopItem);
-    } else if (lastTopItem) {
-      lastTopItem.children.push({ done: m[2] !== " ", title, lineNo });
+      if (indent === 0) {
+        lastTopItem = { done: m[2] !== " ", title, kanId, due, tags, mentions, lineNo, children: [], description: "" };
+        current.items.push(lastTopItem);
+      } else if (lastTopItem) {
+        lastTopItem.children.push({ done: m[2] !== " ", title, lineNo });
+      }
+      return;
+    }
+
+    // Indented non-checkbox text under a top-level item → card description
+    if (lastTopItem && /^\s+\S/.test(line) && !/^\s*-\s*\[/.test(line)) {
+      const text = line.replace(/^\s+/, "");
+      lastTopItem.description = lastTopItem.description
+        ? lastTopItem.description + "\n" + text
+        : text;
     }
   });
   if (current.items.length) sections.push(current);
@@ -529,6 +605,41 @@ class KanSyncPlugin extends Plugin {
         this.attachActiveNoteToCard(id);
       },
     });
+    this.addCommand({
+      id: "duplicate-card",
+      name: "Duplicate linked card (cursor line)",
+      editorCallback: async (editor) => {
+        const id = this.markerOnCursorLine(editor);
+        if (!id) { new Notice("No %%kan:ID%% marker on this line — push first."); return; }
+        try {
+          const card = await this.client.getCard(id);
+          const listId = card.list && card.list.publicId;
+          if (!listId) { new Notice("Could not resolve card list."); return; }
+          const dup = await this.client.duplicateCard(id, listId, {});
+          new Notice(`Duplicated card${dup && dup.publicId ? ` (${dup.publicId})` : ""}.`);
+        } catch (e) { new Notice("Kan error: " + e.message, 8000); console.error(e); }
+      },
+    });
+    this.addCommand({
+      id: "delete-card",
+      name: "Delete linked card (cursor line)",
+      editorCallback: async (editor) => {
+        if (!this.settings.allowDeletes) {
+          new Notice("Enable “Allow deletes on push” in Settings → Kan Sync first.");
+          return;
+        }
+        const lineNo = editor.getCursor().line;
+        const line = editor.getLine(lineNo);
+        const id = (line.match(MARKER_RE) || [])[1];
+        if (!id) { new Notice("No %%kan:ID%% marker on this line."); return; }
+        try {
+          await this.client.deleteCard(id);
+          const cleaned = line.replace(MARKER_RE, "").replace(/\s+$/, "");
+          editor.setLine(lineNo, cleaned);
+          new Notice("Card deleted in Kan.");
+        } catch (e) { new Notice("Kan error: " + e.message, 8000); console.error(e); }
+      },
+    });
 
     this.addSettingTab(new KanSettingTab(this.app, this));
     this.registerInterval(window.setInterval(() => this.autoTick(), 60 * 1000));
@@ -573,9 +684,40 @@ class KanSyncPlugin extends Plugin {
     return (fm && fm.kan_board) || file.basename;
   }
 
+  boardIdForFile(file) {
+    const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    return (fm && fm.kan_board_id) || null;
+  }
+
+  async ensureBoardIdFrontmatter(file, boardId) {
+    const existing = this.boardIdForFile(file);
+    if (existing === boardId) return;
+    await this.app.fileManager.processFrontMatter(file, (fm) => {
+      fm.kan_board_id = boardId;
+    });
+  }
+
   async findBoardByName(name) {
     const boards = await this.client.getBoards(this.settings.workspaceId);
     return boards.find((b) => b.name.toLowerCase() === name.toLowerCase()) || null;
+  }
+
+  async resolveBoard(file, boardName, listNames) {
+    const id = this.boardIdForFile(file);
+    if (id) {
+      try {
+        const board = await this.client.getBoard(id);
+        if (board && board.publicId) return { stub: { publicId: board.publicId, name: board.name }, board };
+      } catch (e) {
+        console.warn("Kan: stored kan_board_id not found, falling back to name", e);
+      }
+    }
+    let stub = await this.findBoardByName(boardName);
+    if (!stub) {
+      const created = await this.client.createBoard(this.settings.workspaceId, boardName, listNames || []);
+      stub = { publicId: created.publicId, name: boardName };
+    }
+    return { stub, board: null };
   }
 
   async ensureLabels(board, tagNames) {
@@ -594,14 +736,16 @@ class KanSyncPlugin extends Plugin {
   }
 
   async syncSubtasksForCard(card, children) {
-    // adds missing checklist items AND pushes note-side completion to Kan (additive: never un-completes)
+    // adds missing checklist items AND pushes note-side completion to Kan
+    // when allowDeletes: removes Kan checklist items not present in the note
     const clName = this.settings.subtaskChecklistName || "Subtasks";
     let checklist = (card.checklists || []).find((c) => c.name.toLowerCase() === clName.toLowerCase());
     let checklistId = checklist ? checklist.publicId : null;
     const existingByTitle = {};
     for (const i of (checklist && checklist.items) || []) existingByTitle[normTitle(i.title)] = i;
 
-    let added = 0, completed = 0;
+    let added = 0, completed = 0, removed = 0;
+    const want = new Set(children.map((c) => normTitle(c.title)));
     for (const child of children) {
       const existing = existingByTitle[normTitle(child.title)];
       if (existing) {
@@ -622,7 +766,15 @@ class KanSyncPlugin extends Plugin {
         completed++;
       }
     }
-    return { added, completed };
+    if (this.settings.allowDeletes && checklist) {
+      for (const i of checklist.items || []) {
+        if (!want.has(normTitle(i.title))) {
+          await this.client.deleteChecklistItem(i.publicId);
+          removed++;
+        }
+      }
+    }
+    return { added, completed, removed };
   }
 
   resolveMention(mention, wsMembers) {
@@ -638,18 +790,39 @@ class KanSyncPlugin extends Plugin {
     return null;
   }
 
-  async syncMembersForCard(cardPublicId, currentMemberIds, mentions, wsMembers) {
-    // add-only: assign mentioned members the card doesn't have yet
-    let assigned = 0;
+  async syncMembersForCard(cardPublicId, currentMemberIds, mentions, wsMembers, existingMembers) {
+    // assign mentioned members; when allowDeletes, remove members not mentioned
+    let assigned = 0, removed = 0;
+    const wantIds = new Set();
     for (const mention of mentions) {
       const member = this.resolveMention(mention, wsMembers);
       if (!member) { console.warn(`Kan: no workspace member matches @${mention}`); continue; }
+      wantIds.add(member.publicId);
       if (currentMemberIds.has(member.publicId)) continue;
       await this.client.toggleCardMember(cardPublicId, member.publicId);
       currentMemberIds.add(member.publicId);
       assigned++;
     }
-    return assigned;
+    if (this.settings.allowDeletes && existingMembers) {
+      for (const m of existingMembers) {
+        if (!wantIds.has(m.publicId) && currentMemberIds.has(m.publicId)) {
+          await this.client.toggleCardMember(cardPublicId, m.publicId);
+          currentMemberIds.delete(m.publicId);
+          removed++;
+        }
+      }
+    }
+    return { assigned, removed };
+  }
+
+  resolveMentionIds(mentions, wsMembers) {
+    const ids = [];
+    for (const mention of mentions) {
+      const member = this.resolveMention(mention, wsMembers);
+      if (member) ids.push(member.publicId);
+      else console.warn(`Kan: no workspace member matches @${mention}`);
+    }
+    return ids;
   }
 
   markerOnCursorLine(editor) {
@@ -704,21 +877,54 @@ class KanSyncPlugin extends Plugin {
     new Notice(`Kan: syncing "${boardName}"…`);
 
     try {
-      let stub = await this.findBoardByName(boardName);
-      if (!stub) {
-        const created = await this.client.createBoard(this.settings.workspaceId, boardName, sections.map((s) => s.name));
-        stub = { publicId: created.publicId };
-      }
-      const board = await this.client.getBoard(stub.publicId);
+      let { stub, board: preloaded } = await this.resolveBoard(file, boardName, sections.map((s) => s.name));
+      let board = preloaded || await this.client.getBoard(stub.publicId);
 
+      // Board rename when note's mapped name differs from Kan board name
+      if (this.settings.renameBoard && board.name && board.name.toLowerCase() !== boardName.toLowerCase()) {
+        await this.client.updateBoard(board.publicId, { name: boardName });
+        board = await this.client.getBoard(board.publicId);
+      }
+      await this.ensureBoardIdFrontmatter(file, board.publicId);
+
+      // Ensure lists exist; optionally rename lists that hold this section's cards
       const listMap = {};
-      for (const l of board.lists || []) listMap[l.name.toLowerCase()] = l.publicId;
+      const listById = {};
+      for (const l of board.lists || []) {
+        listMap[l.name.toLowerCase()] = l.publicId;
+        listById[l.publicId] = l;
+      }
       for (const s of sections) {
         if (!listMap[s.name.toLowerCase()]) {
+          // try rename: if section cards all live in one differently named list
+          if (this.settings.renameLists) {
+            const cardListIds = new Set();
+            for (const item of s.items) {
+              if (!item.kanId) continue;
+              for (const l of board.lists || []) {
+                if ((l.cards || []).some((c) => c.publicId === item.kanId)) cardListIds.add(l.publicId);
+              }
+            }
+            if (cardListIds.size === 1) {
+              const oldId = [...cardListIds][0];
+              const old = listById[oldId];
+              if (old && old.name.toLowerCase() !== s.name.toLowerCase()) {
+                await this.client.updateList(oldId, { name: s.name });
+                delete listMap[old.name.toLowerCase()];
+                listMap[s.name.toLowerCase()] = oldId;
+                old.name = s.name;
+                continue;
+              }
+            }
+          }
           const nl = await this.client.createList(board.publicId, s.name);
           listMap[s.name.toLowerCase()] = nl.publicId;
         }
       }
+
+      // Refresh board after list changes
+      board = await this.client.getBoard(board.publicId);
+      for (const l of board.lists || []) listMap[l.name.toLowerCase()] = l.publicId;
 
       const doneNames = this.settings.doneLists.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
       const firstDoneList = (board.lists || []).find((l) => doneNames.includes(l.name.toLowerCase()));
@@ -735,10 +941,15 @@ class KanSyncPlugin extends Plugin {
 
       const allTags = this.settings.syncTags ? [...new Set(sections.flatMap((s) => s.items.flatMap((i) => i.tags)))] : [];
       const labelMap = allTags.length ? await this.ensureLabels(board, allTags) : {};
+      // refresh labels after ensure
+      board = allTags.length ? await this.client.getBoard(board.publicId) : board;
+      for (const l of board.labels || []) labelMap[l.name.toLowerCase()] = l.publicId;
       const wsMembers = (board.workspace && board.workspace.members) || [];
 
       let created = 0, updated = 0, adopted = 0, moved = 0, subAdded = 0, subCompleted = 0, labeled = 0, assigned = 0;
+      let deleted = 0, descUpdated = 0, clearedDue = 0, removedLabels = 0, removedMembers = 0, removedSubs = 0;
       const markers = [];
+      const noteCardIds = new Set();
 
       for (const s of sections) {
         const listId = listMap[s.name.toLowerCase()];
@@ -746,36 +957,70 @@ class KanSyncPlugin extends Plugin {
           const existing = item.kanId ? cardsById[item.kanId] : cardsByTitle[normTitle(item.title)];
 
           if (existing) {
+            noteCardIds.add(existing.publicId);
             if (!item.kanId && this.settings.useIdMarkers) { markers.push({ lineNo: item.lineNo, id: existing.publicId }); adopted++; }
 
             const patch = {};
             if (item.kanId && normTitle(existing.title) !== normTitle(item.title)) patch.title = item.title;
             const existingDue = existing.dueDate ? String(existing.dueDate).slice(0, 10) : null;
             if (item.due && item.due !== existingDue) patch.dueDate = toIsoDue(item.due);
+            else if (!item.due && existingDue) { patch.dueDate = null; clearedDue++; }
+
+            if (this.settings.syncDescription) {
+              const wantDesc = buildCardDescription(file.path, item.description);
+              if ((existing.description || "") !== wantDesc) {
+                patch.description = wantDesc;
+                descUpdated++;
+              }
+            }
+
+            // move card to the section's list if heading changed
+            if (listId && cardListName[existing.publicId] !== s.name.toLowerCase()
+              && !(item.done && this.settings.moveDoneCards && firstDoneList)) {
+              patch.listPublicId = listId;
+            }
+
             if (Object.keys(patch).length) { await this.client.updateCard(existing.publicId, patch); updated++; }
 
-            // retro-label: add labels for tags the card doesn't have yet (never removes)
-            if (this.settings.syncTags && this.settings.retroLabel && item.tags.length) {
+            // labels: add (retro) and optionally remove
+            if (this.settings.syncTags) {
               const have = new Set((existing.labels || []).map((l) => l.name.toLowerCase()));
-              for (const tag of item.tags) {
-                if (!have.has(tag.toLowerCase()) && labelMap[tag.toLowerCase()]) {
-                  await this.client.toggleCardLabel(existing.publicId, labelMap[tag.toLowerCase()]);
-                  labeled++;
+              const want = new Set(item.tags.map((t) => t.toLowerCase()));
+              if (this.settings.retroLabel) {
+                for (const tag of item.tags) {
+                  if (!have.has(tag.toLowerCase()) && labelMap[tag.toLowerCase()]) {
+                    await this.client.toggleCardLabel(existing.publicId, labelMap[tag.toLowerCase()]);
+                    labeled++;
+                    have.add(tag.toLowerCase());
+                  }
+                }
+              }
+              if (this.settings.allowDeletes) {
+                for (const l of existing.labels || []) {
+                  if (!want.has(l.name.toLowerCase())) {
+                    await this.client.toggleCardLabel(existing.publicId, l.publicId);
+                    removedLabels++;
+                  }
                 }
               }
             }
 
-            // @mentions → card members (add-only)
-            if (this.settings.syncMembers && item.mentions.length) {
+            // @mentions → card members
+            if (this.settings.syncMembers) {
               const have = new Set((existing.members || []).map((m) => m.publicId));
-              assigned += await this.syncMembersForCard(existing.publicId, have, item.mentions, wsMembers);
+              const r = await this.syncMembersForCard(
+                existing.publicId, have, item.mentions, wsMembers, existing.members || []
+              );
+              assigned += r.assigned;
+              removedMembers += r.removed;
             }
 
-            // sub-items → card checklist (two-way completion: note done → Kan completed)
-            if (this.settings.syncSubtasks && item.children.length) {
+            // sub-items → card checklist
+            if (this.settings.syncSubtasks && (item.children.length || this.settings.allowDeletes)) {
               const r = await this.syncSubtasksForCard(existing, item.children);
               subAdded += r.added;
               subCompleted += r.completed;
+              removedSubs += r.removed || 0;
             }
 
             // item checked in note → move card to done list
@@ -789,24 +1034,61 @@ class KanSyncPlugin extends Plugin {
           if (item.done) continue;
 
           const labelIds = this.settings.syncTags ? item.tags.map((t) => labelMap[t.toLowerCase()]).filter(Boolean) : [];
-          const nc = await this.client.createCard(listId, item.title, `From Obsidian: ${file.path}`, toIsoDue(item.due), labelIds);
+          const memberIds = this.settings.syncMembers ? this.resolveMentionIds(item.mentions, wsMembers) : [];
+          const desc = this.settings.syncDescription
+            ? buildCardDescription(file.path, item.description)
+            : buildCardDescription(file.path, "");
+          const nc = await this.client.createCard(listId, item.title, desc, toIsoDue(item.due), labelIds, memberIds);
           created++;
+          if (nc && nc.publicId) noteCardIds.add(nc.publicId);
           if (this.settings.useIdMarkers && nc && nc.publicId) markers.push({ lineNo: item.lineNo, id: nc.publicId });
+          if (memberIds.length) assigned += memberIds.length;
 
           if (this.settings.syncSubtasks && item.children.length && nc && nc.publicId) {
             const r = await this.syncSubtasksForCard({ publicId: nc.publicId, checklists: [] }, item.children);
             subAdded += r.added;
             subCompleted += r.completed;
           }
+        }
+      }
 
-          if (this.settings.syncMembers && item.mentions.length && nc && nc.publicId)
-            assigned += await this.syncMembersForCard(nc.publicId, new Set(), item.mentions, wsMembers);
+      // Optional: delete cards that originated from this note but are no longer in it
+      if (this.settings.allowDeletes) {
+        const pathNeedle = DESC_PREFIX + file.path;
+        for (const l of board.lists || []) {
+          for (const c of l.cards || []) {
+            if (noteCardIds.has(c.publicId)) continue;
+            const d = c.description || "";
+            if (d === pathNeedle || d.startsWith(pathNeedle + "\n")) {
+              await this.client.deleteCard(c.publicId);
+              deleted++;
+            }
+          }
         }
       }
 
       if (markers.length) {
-        for (const m of markers) if (!MARKER_RE.test(lines[m.lineNo])) lines[m.lineNo] += ` %%kan:${m.id}%%`;
-        await this.app.vault.modify(file, lines.join("\n"));
+        // re-read in case frontmatter write shifted lines — markers use pre-frontmatter line numbers from parse
+        // Prefer editing by appending markers on original parse lines when content unchanged enough
+        const fresh = await this.app.vault.read(file);
+        const freshLines = fresh.split("\n");
+        // Map by kan intent: apply markers using title+approximate line from original parse against current file
+        for (const m of markers) {
+          if (m.lineNo < freshLines.length && !MARKER_RE.test(freshLines[m.lineNo])
+            && normTitle(freshLines[m.lineNo]) === normTitle(lines[m.lineNo] || "")) {
+            freshLines[m.lineNo] += ` %%kan:${m.id}%%`;
+          } else {
+            // fallback: find unmarked line with same title
+            for (let i = 0; i < freshLines.length; i++) {
+              if (MARKER_RE.test(freshLines[i])) continue;
+              if (/^-\s*\[[ xX]\]/.test(freshLines[i]) && normTitle(freshLines[i]) === normTitle(lines[m.lineNo] || "")) {
+                freshLines[i] += ` %%kan:${m.id}%%`;
+                break;
+              }
+            }
+          }
+        }
+        await this.app.vault.modify(file, freshLines.join("\n"));
       }
 
       const bits = [`${created} created`, `${updated} updated`];
@@ -816,6 +1098,12 @@ class KanSyncPlugin extends Plugin {
       if (subCompleted) bits.push(`${subCompleted} subtasks completed`);
       if (labeled) bits.push(`${labeled} labels`);
       if (assigned) bits.push(`${assigned} assigned`);
+      if (descUpdated) bits.push(`${descUpdated} descriptions`);
+      if (clearedDue) bits.push(`${clearedDue} due cleared`);
+      if (deleted) bits.push(`${deleted} deleted`);
+      if (removedLabels) bits.push(`${removedLabels} labels removed`);
+      if (removedMembers) bits.push(`${removedMembers} members removed`);
+      if (removedSubs) bits.push(`${removedSubs} subtasks removed`);
       new Notice(`Kan "${boardName}": ${bits.join(", ")}.`);
     } catch (e) {
       new Notice("Kan error: " + e.message, 8000);
@@ -831,9 +1119,17 @@ class KanSyncPlugin extends Plugin {
 
     const boardName = this.boardNameForFile(file);
     try {
-      const stub = await this.findBoardByName(boardName);
-      if (!stub) { if (!silent) new Notice(`No Kan board named "${boardName}".`); return; }
-      const board = await this.client.getBoard(stub.publicId);
+      let board = null;
+      const id = this.boardIdForFile(file);
+      if (id) {
+        try { board = await this.client.getBoard(id); }
+        catch (e) { console.warn("Kan: kan_board_id missing on pull, falling back to name", e); }
+      }
+      if (!board) {
+        const byName = await this.findBoardByName(boardName);
+        if (!byName) { if (!silent) new Notice(`No Kan board named "${boardName}".`); return; }
+        board = await this.client.getBoard(byName.publicId);
+      }
 
       const doneNames = this.settings.doneLists.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
       const doneTitles = new Set();
@@ -851,17 +1147,25 @@ class KanSyncPlugin extends Plugin {
 
       let content = await this.app.vault.read(file);
       let checked = 0;
+      let enriched = 0;
       let currentCardId = null;
 
+      const enrich = this.settings.pullDueDates || this.settings.pullTags || this.settings.pullMentions;
+
       content = content.split("\n").map((line) => {
-        const top = line.match(/^-\s*\[( |x|X)\]\s+(.*)/);
-        if (top) {
-          currentCardId = (top[2].match(MARKER_RE) || [])[1] || null;
-          if (top[1] === " ") {
-            const isDone = currentCardId ? doneIds.has(currentCardId) : doneTitles.has(normTitle(top[2]));
-            if (isDone) { checked++; return line.replace("[ ]", "[x]"); }
+        const top = line.match(/^(\s*)-\s*\[( |x|X)\]\s+(.*)/);
+        if (top && top[1].length === 0) {
+          currentCardId = (top[3].match(MARKER_RE) || [])[1] || null;
+          let out = line;
+          if (top[2] === " ") {
+            const isDone = currentCardId ? doneIds.has(currentCardId) : doneTitles.has(normTitle(top[3]));
+            if (isDone) { checked++; out = out.replace("[ ]", "[x]"); }
           }
-          return line;
+          if (enrich && currentCardId && cardsById[currentCardId]) {
+            const next = enrichChecklistLine(out, cardsById[currentCardId], this.settings);
+            if (next !== out) { enriched++; out = next; }
+          }
+          return out;
         }
         // indented sub-item: check off if its checklist item is completed in Kan
         const sub = line.match(/^(\s+-\s*)\[ \](\s+)(.*)/);
@@ -893,7 +1197,11 @@ class KanSyncPlugin extends Plugin {
       }
 
       await this.app.vault.modify(file, content);
-      if (!silent) new Notice(`Kan: status pulled. ${checked} item(s) checked off.`);
+      if (!silent) {
+        const bits = [`${checked} item(s) checked off`];
+        if (enriched) bits.push(`${enriched} enriched`);
+        new Notice(`Kan: status pulled. ${bits.join(", ")}.`);
+      }
     } catch (e) {
       if (!silent) new Notice("Kan error: " + e.message, 8000);
       console.error(e);
@@ -977,7 +1285,7 @@ class KanSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Retro-label existing cards")
-      .setDesc("When you add a #tag to an already-synced item, add the label to its card on next push. Never removes labels.")
+      .setDesc("When you add a #tag to an already-synced item, add the label to its card on next push.")
       .addToggle((t) =>
         t.setValue(this.plugin.settings.retroLabel)
           .onChange(async (v) => { this.plugin.settings.retroLabel = v; await this.plugin.saveSettings(); })
@@ -985,10 +1293,42 @@ class KanSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Sync @mentions as card members")
-      .setDesc("@name on an item assigns the matching workspace member (by name or email prefix) to its card. Add-only.")
+      .setDesc("@name on an item assigns the matching workspace member (by name or email prefix) to its card.")
       .addToggle((t) =>
         t.setValue(this.plugin.settings.syncMembers)
           .onChange(async (v) => { this.plugin.settings.syncMembers = v; await this.plugin.saveSettings(); })
+      );
+
+    new Setting(containerEl)
+      .setName("Sync card descriptions")
+      .setDesc("Indented text under a checklist item (not a sub-checkbox) becomes the card description. Always includes a source path header.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.syncDescription)
+          .onChange(async (v) => { this.plugin.settings.syncDescription = v; await this.plugin.saveSettings(); })
+      );
+
+    new Setting(containerEl)
+      .setName("Rename board to match note")
+      .setDesc("On push, rename the linked Kan board when the note name / kan_board frontmatter changes. Stores kan_board_id in frontmatter.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.renameBoard)
+          .onChange(async (v) => { this.plugin.settings.renameBoard = v; await this.plugin.saveSettings(); })
+      );
+
+    new Setting(containerEl)
+      .setName("Rename lists to match headings")
+      .setDesc("On push, rename a Kan list when its heading changes (cards with markers already live in that list).")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.renameLists)
+          .onChange(async (v) => { this.plugin.settings.renameLists = v; await this.plugin.saveSettings(); })
+      );
+
+    new Setting(containerEl)
+      .setName("Allow deletes on push")
+      .setDesc("Off by default. When on: removing a tag/mention/sub-item or a whole synced item from the note removes the matching label/member/checklist item/card in Kan. Also enables the Delete linked card command.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.allowDeletes)
+          .onChange(async (v) => { this.plugin.settings.allowDeletes = v; await this.plugin.saveSettings(); })
       );
 
     new Setting(containerEl)
@@ -1024,6 +1364,30 @@ class KanSettingTab extends PluginSettingTab {
       );
 
     containerEl.createEl("h2", { text: "Pull (Kan → note)" });
+
+    new Setting(containerEl)
+      .setName("Pull due dates")
+      .setDesc("Write 📅 YYYY-MM-DD onto checklist lines from the card due date.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.pullDueDates)
+          .onChange(async (v) => { this.plugin.settings.pullDueDates = v; await this.plugin.saveSettings(); })
+      );
+
+    new Setting(containerEl)
+      .setName("Pull labels as #tags")
+      .setDesc("Write card labels onto checklist lines as #tags.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.pullTags)
+          .onChange(async (v) => { this.plugin.settings.pullTags = v; await this.plugin.saveSettings(); })
+      );
+
+    new Setting(containerEl)
+      .setName("Pull members as @mentions")
+      .setDesc("Write card members onto checklist lines as @handles.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.pullMentions)
+          .onChange(async (v) => { this.plugin.settings.pullMentions = v; await this.plugin.saveSettings(); })
+      );
 
     new Setting(containerEl)
       .setName("Done lists")

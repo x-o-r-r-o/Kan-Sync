@@ -4,7 +4,7 @@
 
 [Kan.bn](https://kan.bn) is the open-source alternative to Trello. This plugin turns any Obsidian note with checkboxes into a live kanban board and keeps the two in sync — without ever duplicating your board data locally.
 
-![Version](https://img.shields.io/badge/version-0.5.2-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-0.6.0-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -15,7 +15,7 @@
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Commands](#commands)
-- [Usage Guide](#usage-guide)
+- [Complete usage guide](#complete-usage-guide)
 - [Sync Conventions](#sync-conventions)
 - [Disclosures](#disclosures)
 - [Data & Privacy](#data--privacy)
@@ -23,6 +23,7 @@
 - [Troubleshooting](#troubleshooting)
 - [Limitations](#limitations)
 - [Roadmap](#roadmap)
+- [Changelog](#changelog)
 - [Development](#development)
 - [License](#license)
 
@@ -30,28 +31,22 @@
 
 ## Features
 
-- **📋 Sidebar board view with drag & drop** — browse any Kan board inside Obsidian: lists as columns, cards with due dates and coloured labels. **Drag cards between lists** to move them in Kan. Always fetched live, never stale.
-- **⬆️ Push checklists to Kan** — one command turns the active note's checkboxes into kanban cards. Headings become lists, unchecked items become cards.
-- **⬇️ Pull board status into notes** — writes a status table into your note and auto-checks off items whose cards reached a "Done" list.
-- **🔗 Rename-safe sync (ID markers)** — synced items get a hidden `%%kan:ID%%` Obsidian comment (invisible in Reading mode). Rewording an item **updates** its card instead of duplicating it.
-- **📅 Due dates** — write `📅 2026-08-14` or `@due(2026-08-14)` on an item and the card gets a due date; changing it updates the card.
-- **🏷 #tags → labels** — tags on checklist items become Kan labels, auto-created with deterministic colours.
-- **☑️ Sub-items → card checklists (two-way)** — indented checkboxes under an item become a checklist on its card. Completion flows both ways: check a sub-item in the note and Kan's checklist item completes on push; complete it in Kan and the note checks off on pull.
-- **📎 Attachments** — attach any file (up to 50 MB) or the active note itself to a synced card, straight from the editor. Attachment counts show on cards in the board view.
-- **👤 @mentions → assignees** — write `@asim` on an item and the matching workspace member (by name or email prefix) is assigned to the card. Add-only.
-- **🗂 Card detail modal** — click any card in the board view: full description, labels, members, checklists with progress, attachment download links, activity feed (moves, renames, labels, members), and inline commenting.
-- **🌐 Multi-workspace switcher** — a workspace dropdown in the board view header; switch workspaces without touching settings.
-- **🏷️ Retro-labeling** — add a #tag to an already-synced item and the label lands on its card on next push (add-only; never removes).
-- **✅ Done items move cards** — check off an item in the note and its card moves to your first "Done" list on next push.
-- **💬 Card comments** — comment on any synced card straight from the editor (cursor on the line → command).
-- **🔎 Workspace search** — fuzzy-search all boards and cards; selecting a result opens its board in the sidebar.
-- **↕️ In-list reordering** — drop a card onto another card to take its position.
-- **🔄 Full sync command** — push + pull in one step.
-- **⏱ Auto-sync** — optional interval that auto-pulls status for notes opted in via `kan_board` frontmatter.
-- **🔁 Idempotent** — dedupe by ID marker (or title fallback); pushing twice never duplicates, and the plugin **never deletes** cards.
-- **🗂 Frontmatter board mapping** — a note syncs to a board with the same name; override with `kan_board:` frontmatter.
-- **🔐 Local-first credentials** — your API key lives only in your vault's plugin folder, never transmitted anywhere except your Kan instance.
-- **☁️ Self-hosted support** — configurable API base URL in settings.
+- **Sidebar board view with drag & drop** — browse any Kan board inside Obsidian; drag cards between lists or reorder within a list.
+- **Push checklists to Kan** — headings become lists; unchecked items become cards.
+- **Pull board status into notes** — status table + auto-check completed items; optionally enrich lines with due dates, `#tags`, and `@mentions` from Kan.
+- **Rename-safe sync (ID markers)** — hidden `%%kan:ID%%` comments so rewording updates the same card.
+- **Due dates** — `📅 2026-08-14` or `@due(2026-08-14)`; clearing the date on a note clears the card due date on push.
+- **`#tags` → labels** — auto-created with deterministic colours; retro-label existing cards; optional remove when deletes are enabled.
+- **`@mentions` → assignees** — matched by workspace member name or email prefix; set on card create.
+- **Card descriptions** — indented text under an item (not a sub-checkbox) syncs to the card description.
+- **Sub-items → card checklists** — two-way completion; optional delete of removed sub-items.
+- **Attachments** — attach a file or the active note to a synced card.
+- **Card detail modal** — description, labels, members, checklists, attachments, activity, inline comments.
+- **Multi-workspace switcher** — switch workspaces from the board view header.
+- **Board & list rename** — renaming the note / `kan_board` or a heading can rename the Kan board / list on push.
+- **Optional deletes** — opt-in removal of cards, labels, members, and checklist items that disappear from the note.
+- **Duplicate / delete card commands** — from the cursor line (delete requires optional deletes).
+- **Workspace search**, **comments**, **done-item → Done list**, **auto-sync pull**, **self-hosted base URL**.
 
 ## How It Works
 
@@ -62,19 +57,18 @@
 │  Obsidian (vault)   │ ◄───────────────────────► │   Kan.bn     │
 │                     │                           │              │
 │  Notes = the PLAN   │  Push: checklist → cards  │ Boards = the │
-│  (what needs doing) │  Pull: card status → ☑    │  EXECUTION   │
+│  (what needs doing) │  Pull: status + meta → ☑  │  EXECUTION   │
 │                     │  View: live board render  │ (progress)   │
 └─────────────────────┘                           └──────────────┘
 ```
 
-The design follows a single-source-of-truth rule to avoid two-way edit conflicts:
-
 | Data | Source of truth | Flow |
 |------|-----------------|------|
-| Plans, checklists, task wording | Obsidian notes | Vault → Kan (push) |
+| Plans, checklists, task wording, descriptions | Obsidian notes | Vault → Kan (push) |
 | Execution state (in progress / done) | Kan board | Kan → vault (pull) |
+| Due dates, labels, members (when pull options on) | Kan board (enriched into note) | Kan → vault (pull) |
 
-Nothing runs in the background — push and pull only happen when you run a command. The board view fetches fresh data every time it renders.
+Nothing runs in the background except optional auto-pull. Push and pull only run when you invoke a command (or auto-sync tick).
 
 ## Installation
 
@@ -106,147 +100,238 @@ Also listed at [community.obsidian.md](https://community.obsidian.md).
 
 ## Configuration
 
-Open **Settings → Kan Sync**:
+Open **Settings → Kan Sync**.
 
-Settings are grouped into **Connection**, **Push (note → Kan)**, and **Pull (Kan → note)**:
+### Connection
 
-| Setting | Group | Description | Default |
-|---------|-------|-------------|---------|
-| **API key** | Connection | Create at [kan.bn/settings](https://kan.bn/settings) → API keys. Stored locally in `data.json` | — |
-| **Base URL** | Connection | Kan API base — change for self-hosted instances | `https://kan.bn/api/v1` |
-| **Workspace** | Connection | Your Kan workspace public ID. Click **Detect** to auto-fill (first workspace selected; others logged to console) | — |
-| **Rename-safe ID markers** | Push | Hidden `%%kan:ID%%` comments so renames update cards instead of duplicating | On |
-| **Sync #tags as labels** | Push | Item tags become auto-created Kan labels | On |
-| **Sync @mentions as card members** | Push | `@name` assigns matching workspace members to cards (add-only) | On |
-| **Retro-label existing cards** | Push | Tags added to already-synced items label their cards on next push (add-only) | On |
-| **Sync sub-items as card checklists** | Push | Indented checkboxes become a checklist on the card | On |
-| **Subtask checklist name** | Push | Name of the card checklist receiving sub-items | `Subtasks` |
-| **Move done cards** | Push | Items checked in the note move their cards to the first Done list | On |
-| **Default list name** | Push | List for items appearing before any heading | `Backlog` |
-| **Done lists** | Pull | Comma-separated list names treated as "completed" | `Done, Completed, Launched` |
-| **Status section heading** | Pull | Heading for the status section written into notes | `## Kan Board Status` |
-| **Include card titles in status** | Pull | Off = counts only (compact tables) | On |
-| **Auto-sync interval (minutes)** | Pull | `0` = off. Auto-pulls for active notes with `kan_board` frontmatter | `0` |
+| Setting | Description | Default |
+|---------|-------------|---------|
+| **API key** | Create at [kan.bn/settings](https://kan.bn/settings) → API keys | — |
+| **Base URL** | Change for self-hosted Kan | `https://kan.bn/api/v1` |
+| **Workspace** | Workspace public ID — use **Detect** to auto-fill | — |
+
+### Push (note → Kan)
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| **Rename-safe ID markers** | Append `%%kan:ID%%` after sync | On |
+| **Sync #tags as labels** | Tags → Kan labels | On |
+| **Retro-label existing cards** | Add labels when tags appear on synced items | On |
+| **Sync @mentions as card members** | `@name` → assignees | On |
+| **Sync card descriptions** | Indented text under an item → card description | On |
+| **Rename board to match note** | Rename Kan board when note / `kan_board` changes; writes `kan_board_id` | On |
+| **Rename lists to match headings** | Rename Kan list when a heading changes | On |
+| **Allow deletes on push** | Remove Kan cards/labels/members/subtasks that disappear from the note | **Off** |
+| **Sync sub-items as card checklists** | Indented checkboxes → checklist | On |
+| **Subtask checklist name** | Checklist name on the card | `Subtasks` |
+| **Move done cards** | Checked note items move cards to first Done list | On |
+| **Default list name** | List for items before any heading | `Backlog` |
+
+### Pull (Kan → note)
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| **Pull due dates** | Write `📅 YYYY-MM-DD` from the card | On |
+| **Pull labels as #tags** | Write card labels as `#tags` | On |
+| **Pull members as @mentions** | Write members as `@handles` | On |
+| **Done lists** | List names treated as completed | `Done, Completed, Launched` |
+| **Status section heading** | Heading for the status table | `## Kan Board Status` |
+| **Include card titles in status** | Off = counts only | On |
+| **Auto-sync interval (minutes)** | `0` = off; auto-pull when note has `kan_board` frontmatter | `0` |
 
 ## Commands
 
-All commands are available via the Command Palette (`Ctrl/Cmd + P`):
+All via Command Palette (`Ctrl/Cmd + P`):
 
 | Command | What it does |
 |---------|--------------|
-| `Kan Sync: Open board view` | Opens the sidebar kanban view (also via the ribbon dashboard icon). Board selector, refresh, drag & drop between lists |
-| `Kan Sync: Push active note's checklist to Kan` | Parses the active note, finds/creates the matching board, creates lists from headings and cards from unchecked items; updates renamed titles and due dates on marked items |
-| `Kan Sync: Pull Kan board status into active note` | Fetches the matching board, writes/updates a `## Kan Board Status` section, checks off items completed in Kan (matched by ID marker, title fallback) |
-| `Kan Sync: Full sync active note (push + pull)` | Both of the above in one step |
-| `Kan Sync: Search boards and cards` | Fuzzy search across the workspace (also via 🔍 in the board view); choosing a result opens its board |
-| `Kan Sync: Comment on linked card (cursor line)` | With the cursor on a synced item (`%%kan:ID%%` present), opens a comment box and posts to the card |
-| `Kan Sync: Attach a file to linked card (cursor line)` | Opens a file picker; uploads the chosen file (≤50 MB) to the card via presigned S3 upload |
-| `Kan Sync: Attach active note to linked card (cursor line)` | Uploads the current note as a `.md` attachment on the card — snapshot the plan onto the board |
+| `Kan Sync: Open board view` | Sidebar kanban (also ribbon dashboard icon) |
+| `Kan Sync: Push active note's checklist to Kan` | Create/update board, lists, cards from the note |
+| `Kan Sync: Pull Kan board status into active note` | Status table + checkoffs + optional due/tags/mentions |
+| `Kan Sync: Full sync active note (push + pull)` | Push then pull |
+| `Kan Sync: Search boards and cards` | Fuzzy search (also 🔍 in board view) |
+| `Kan Sync: Comment on linked card (cursor line)` | Comment on the card for the current line |
+| `Kan Sync: Attach a file to linked card (cursor line)` | Upload a file (≤50 MB) |
+| `Kan Sync: Attach active note to linked card (cursor line)` | Attach current note as `.md` |
+| `Kan Sync: Duplicate linked card (cursor line)` | Duplicate the card in its list |
+| `Kan Sync: Delete linked card (cursor line)` | Delete card in Kan (requires **Allow deletes on push**) |
 
-## Usage Guide
+## Complete usage guide
 
-### 1. Structure your note
+### 1. Connect once
+
+1. Install and enable **Kan Sync**.
+2. Open **Settings → Kan Sync**.
+3. Paste your API key from [kan.bn/settings](https://kan.bn/settings).
+4. Click **Detect** next to Workspace (or paste a workspace public ID).
+5. Leave Base URL as default unless you self-host.
+
+### 2. Write a plan note
+
+Use normal Markdown checklists. Headings (`##`–`####`) become Kan lists.
 
 ```markdown
 ---
-kan_board: Reminda AI Launch   # optional — defaults to the note's name
+kan_board: Reminda AI Launch
 ---
 
 ## Phase 1 — Foundation
-- [ ] Lock the launch date 📅 2026-07-20 #P0
+- [ ] Lock the launch date 📅 2026-07-20 #P0 @asim
+  Confirm with leadership and freeze the calendar.
+  - [ ] Draft announcement
+  - [ ] Book venue
 - [ ] Finalize positioning & core message #P1
-- [x] Already done item        # skipped on push
+- [x] Already done item
 
 ## Phase 2 — Assets
-- [ ] Ad creatives batch 1 @due(2026-07-27) #P1 #marketing
-- [ ] Social accounts set up
+- [ ] Ad creatives batch 1 @due(2026-07-27) #marketing
 ```
 
-### 2. Push
+**Frontmatter**
 
-Run **Push active note's checklist to Kan**:
+| Key | Purpose |
+|-----|---------|
+| `kan_board` | Board name (defaults to the note file name) |
+| `kan_board_id` | Written automatically on first push — keeps the link if you rename the board/note |
 
-- Board `Reminda AI Launch` is found — or created if missing
-- `Phase 1 — Foundation` and `Phase 2 — Assets` become lists (created if missing)
-- Each unchecked item becomes a card with its due date and tag-labels (existing cards skipped/updated)
-- After creation, each line gains a hidden `%%kan:ID%%` marker linking it to its card — subsequent pushes **update** the card (title, due date) instead of duplicating
-- Checked items are ignored
-- Cards get a description linking back to the source note path
+**Line syntax**
 
-### 3. Work the board
+| Syntax | Effect on push |
+|--------|----------------|
+| `- [ ]` / `- [x]` | Card (unchecked create/update; checked can move to Done) |
+| `## Heading` | List name |
+| `📅 YYYY-MM-DD` or `@due(YYYY-MM-DD)` | Card due date; **remove it** to clear the due date on push |
+| `#tag` | Kan label |
+| `@name` | Card member (workspace name / email prefix) |
+| Indented text (not a checkbox) | Card description body |
+| Indented `- [ ]` | Checklist item on the card (“Subtasks”) |
+| `%%kan:ID%%` | Link to an existing card (added automatically) |
 
-Drag cards between lists in Kan (web/self-hosted UI) — alone or with your team. Obsidian stays untouched.
+### 3. Push
 
-### 4. Pull
+1. Open the note.
+2. Run **Kan Sync: Push active note's checklist to Kan**.
+3. The plugin finds or creates the board, ensures lists, creates/updates cards, and appends `%%kan:ID%%` markers.
+4. Open **Kan Sync: Open board view** to see the live board; drag cards to move them in Kan.
 
-Run **Pull Kan board status into active note**:
+### 4. Work in Kan
 
-- A `## Kan Board Status` section is written (or replaced) with a table of lists, card counts, and titles
-- Any card sitting in a list named in **Done lists** gets its matching `- [ ]` checkbox flipped to `- [x]` in your note
+Move cards, add labels/members/due dates in Kan (web or self-hosted). Collaborators can edit the board while your note remains the plan source.
 
-### Checklist parsing rules
+### 5. Pull
 
-- Headings `##` to `####` start a new list; items before any heading go to the **Default list** (`Backlog`)
-- Only `- [ ]` / `- [x]` items are parsed; code blocks are ignored
-- **Indented checkboxes** under an item become checklist items on its card (`Subtasks` checklist)
-- `📅 YYYY-MM-DD` or `@due(YYYY-MM-DD)` on an item → card due date
-- `#tags` on an item → Kan labels (auto-created, deterministic colour)
-- `@name` on an item → card assignee (matched against workspace member names / email prefixes)
-- `%%kan:ID%%` markers link lines to cards (added automatically; hidden in Reading mode)
-- Markdown formatting is stripped from card titles: `**bold**`, `[[wikilinks]]`, `[links](url)`, `` `code` ``, dates, tags, markers
-- Card titles are capped at 2,000 characters (API limit)
+1. Run **Kan Sync: Pull Kan board status into active note**.
+2. Items whose cards sit in a **Done** list get checked off.
+3. With pull options on, each linked line is enriched with `📅`, `#tags`, and `@mentions` from the card.
+4. A `## Kan Board Status` table is written/updated at the bottom (or your custom heading).
+
+### 6. Full sync
+
+**Kan Sync: Full sync active note (push + pull)** — push plan changes, then pull execution state.
+
+### 7. Descriptions
+
+```markdown
+- [ ] Ship docs #P1
+  Audience: new self-hosters.
+  Include Docker Compose and MinIO notes.
+  - [ ] Outline
+  - [ ] Screenshots
+```
+
+On push, the card description becomes:
+
+```
+From Obsidian: path/to/note.md
+
+Audience: new self-hosters.
+Include Docker Compose and MinIO notes.
+```
+
+### 8. Board and list rename
+
+- Change `kan_board` (or rename the note if you rely on the basename) → next **push** renames the Kan board when **Rename board to match note** is on.
+- Rename a `##` heading whose cards already have markers → next **push** renames that Kan list when **Rename lists to match headings** is on.
+
+### 9. Optional deletes (off by default)
+
+Enable **Allow deletes on push**, then on the next push:
+
+- Tags removed from a line → labels removed from the card
+- `@mentions` removed → members removed
+- Sub-checkboxes removed → checklist items deleted
+- Entire synced items removed from the note → cards whose description starts with `From Obsidian: <this note path>` are deleted
+
+You can also run **Delete linked card (cursor line)** with the cursor on a marked item.
+
+### 10. Comments, attachments, duplicate
+
+- Cursor on a marked line → **Comment on linked card**
+- **Attach a file** / **Attach active note**
+- **Duplicate linked card** creates a copy in the same list
+
+### 11. Auto-sync
+
+Set **Auto-sync interval** to e.g. `15`. Only notes with `kan_board` in frontmatter auto-**pull** while active. Pushes stay manual so half-written plans are not pushed.
+
+### 12. Self-hosted Kan
+
+Set **Base URL** to your instance’s API root (usually ending in `/api/v1`). Everything else is the same.
 
 ## Sync Conventions
 
-- **Dedupe key = ID marker** when present; **title** (case-insensitive, formatting-stripped) as fallback for unmarked lines. With markers on (default), rewording an item **renames** its card on next push.
-- **No deletions, ever.** The plugin only creates and updates. Removing cards is always a manual action in Kan.
-- **One board per note.** Big projects = one note with phases as headings, or several notes each mapped via `kan_board`.
-- **Labels attach at card creation.** Adding a tag to an already-synced item does not retro-label the card (planned).
+- **Dedupe key = ID marker** when present; **title** (case-insensitive, formatting-stripped) as fallback. With markers on, rewording an item **renames** its card on next push.
+- **No deletions by default.** Enable **Allow deletes on push** to remove cards/labels/members/subtasks that disappear from the note.
+- **One board per note.** Use headings for phases, or multiple notes each with `kan_board` / `kan_board_id`.
+- **Labels attach at creation and via retro-label.** Adding a `#tag` to an already-synced item labels the card on next push when **Retro-label** is on.
+- **Clearing a due date** in the note clears `dueDate` on the card on push.
+- **Pull enrichment** rewrites due/`#tags`/`@mentions` on linked lines from Kan (title text is preserved; meta is rebuilt).
+- **Vault owns the plan; Kan owns execution** — avoid editing the same field on both sides in the same sync cycle.
 
 ## Disclosures
 
 Per [Obsidian developer policies](https://docs.obsidian.md/Developer+policies):
 
-- **Account required.** A [Kan.bn](https://kan.bn) (or self-hosted Kan) account and API key are required for the plugin to work.
-- **Network use.** The plugin sends HTTPS requests to your configured Kan API base URL (default `https://kan.bn/api/v1`) to sync boards, lists, cards, comments, members, and attachments. Board data is never duplicated into a local Kan database; the plugin is an API client.
-- **Attachment uploads.** When you attach a file to a card, the plugin requests a presigned upload URL from Kan, then uploads the file bytes to that URL (Kan-managed object storage, typically S3-compatible). The upload request does not include your Kan API key.
-- **No telemetry.** The plugin does not phone home, collect analytics, or contact any service other than your configured Kan API and Kan-issued upload URLs.
-- **Vault access.** The plugin reads and writes notes in your vault (checklists, ID markers, status tables) via the Obsidian API. It does not access files outside the vault.
+- **Account required.** A [Kan.bn](https://kan.bn) (or self-hosted Kan) account and API key are required.
+- **Network use.** HTTPS to your configured Kan API base URL (default `https://kan.bn/api/v1`).
+- **Attachment uploads.** Presigned upload URLs from Kan (typically S3-compatible). The upload request does not include your API key.
+- **No telemetry.** No analytics or third-party calls beyond Kan and Kan-issued upload URLs.
+- **Vault access.** Reads/writes notes via the Obsidian API; does not access files outside the vault.
 
 ## Data & Privacy
 
 | Data | Where it lives |
 |------|----------------|
-| Boards, lists, cards | Kan's servers (or your self-hosted instance) — never mirrored locally |
-| API key, workspace ID, settings | `<vault>/.obsidian/plugins/kan-sync/data.json` (plaintext, local) |
-| Status snapshots | Only in notes where you explicitly run Pull |
-| Attachment file bytes | Uploaded to Kan-issued presigned storage URLs when you attach files |
+| Boards, lists, cards | Kan's servers (or your self-hosted instance) |
+| API key, workspace ID, settings | `<vault>/.obsidian/plugins/kan-sync/data.json` |
+| Status snapshots / enriched lines | In notes when you pull |
+| Attachment file bytes | Kan-issued presigned storage URLs |
 
-> ⚠️ If you sync your vault (Obsidian Sync, iCloud, git), `data.json` — including your API key — syncs with it. Add it to `.gitignore` for public repos.
+> If you sync your vault (Obsidian Sync, iCloud, git), `data.json` — including your API key — syncs with it. Add it to `.gitignore` for public repos.
 
 ## API Endpoints Used
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/workspaces` | GET | Detect workspace (response unwrapped from `{role, workspace}` items) |
-| `/workspaces/{id}/boards` | GET | List boards for the board view & name matching |
-| `/workspaces/{id}/boards` | POST | Create board (with initial lists) on first push |
-| `/boards/{id}` | GET | Full board fetch: lists → cards → labels/due dates/checklists |
-| `/lists` | POST | Create missing lists on push |
-| `/cards` | POST | Create cards from checklist items (with due date + labels) |
-| `/cards/{id}` | PUT | Rename cards, update due dates, move between lists, reorder (index) |
-| `/cards/{id}/labels/{labelId}` | PUT | Retro-label synced cards |
-| `/cards/{id}/comments` | POST | Comment on cards from the editor |
-| `/cards/{id}/checklists` | POST | Create Subtasks checklist from indented items |
-| `/checklists/{id}/items` | POST | Add sub-items to card checklists |
-| `/workspaces/{id}/search` | GET | Fuzzy search boards & cards |
-| `/labels` | POST | Auto-create labels from #tags |
-| `/checklists/items/{id}` | PATCH | Two-way sub-item completion |
-| `/cards/{id}/attachments/upload-url` | POST | Presigned S3 URL for attachment upload |
-| `/cards/{id}/attachments/confirm` | POST | Save uploaded attachment to the card |
-| `/cards/{id}` | GET | Card detail modal (description, checklists, attachments, members, activity) |
-| `/cards/{id}/members/{memberId}` | PUT | Assign members from @mentions |
-| `/cards/{id}/activities` | GET | Activity feed pagination (modal uses embedded activities by default) |
+| `/workspaces` | GET | Detect workspace |
+| `/workspaces/{id}/boards` | GET / POST | List / create boards |
+| `/boards/{id}` | GET / PUT | Fetch / rename board |
+| `/lists` | POST | Create lists |
+| `/lists/{id}` | PUT | Rename / reorder lists |
+| `/cards` | POST | Create cards (labels + members) |
+| `/cards/{id}` | GET / PUT / DELETE | Detail, update, delete |
+| `/cards/{id}/duplicate` | POST | Duplicate card |
+| `/cards/{id}/labels/{labelId}` | PUT | Toggle label |
+| `/cards/{id}/members/{memberId}` | PUT | Toggle member |
+| `/cards/{id}/comments` | POST | Comment |
+| `/cards/{id}/checklists` | POST | Create checklist |
+| `/checklists/{id}/items` | POST | Add checklist item |
+| `/checklists/items/{id}` | PATCH / DELETE | Update / delete checklist item |
+| `/workspaces/{id}/search` | GET | Search |
+| `/labels` | POST | Create labels |
+| `/cards/{id}/attachments/upload-url` | POST | Presigned upload URL |
+| `/cards/{id}/attachments/confirm` | POST | Confirm attachment |
+| `/cards/{id}/activities` | GET | Activity feed |
 
 Full API docs: [docs.kan.bn/api-reference](https://docs.kan.bn/api-reference/introduction)
 
@@ -255,101 +340,83 @@ Full API docs: [docs.kan.bn/api-reference](https://docs.kan.bn/api-reference/int
 | Symptom | Fix |
 |---------|-----|
 | "No API key set" | Settings → Kan Sync → paste key from kan.bn/settings |
-| Detect shows "No workspaces found" | Key invalid or account has no workspace — test the key: `curl -H "Authorization: Bearer kan_..." https://kan.bn/api/v1/workspaces` |
+| Detect shows "No workspaces found" | Invalid key or empty account — test with `curl -H "Authorization: Bearer kan_..." https://kan.bn/api/v1/workspaces` |
 | `Kan API 401/403` | Key missing/revoked — create a new one |
-| Board view empty | Check workspace ID is set; hit the ↻ refresh button |
-| Pushed items missing | Items must be `- [ ]` (unchecked); checked items are skipped by design |
-| Duplicate cards after rewording | Expected — dedupe is title-based. Archive the old card in Kan |
-| Plugin not listed after install | Reload Obsidian; confirm the three files sit in `.obsidian/plugins/kan-sync/` directly (no nested folder) |
+| Board view empty | Set workspace ID; hit ↻ |
+| Pushed items missing | Only `- [ ]` creates cards; checked items are skipped unless already linked |
+| Duplicate cards after rewording | Turn on ID markers and push once to adopt |
+| Pull didn't add tags/due | Enable Pull due dates / tags / mentions; line needs a `%%kan:ID%%` marker |
+| Delete command refused | Enable **Allow deletes on push** |
+| Plugin not listed after manual install | Reload; ensure files sit directly in `.obsidian/plugins/kan-sync/` |
 
-Errors are also logged to the developer console (`Ctrl/Cmd + Shift + I`).
+Errors also go to the developer console (`Ctrl/Cmd + Shift + I`).
 
 ## Limitations
 
-- Completion, label, and member sync are all **additive** — checking/tagging/mentioning adds, but removing never removes on the other side (prevents sync ping-pong; remove manually where needed)
-- Auto-sync pulls only (status → note); pushes remain manual by design (vault owns the plan — pushing automatically on every edit would create half-finished cards)
-- Card detail modal is read-mostly: commenting works inline; editing title/description happens in Kan's UI
-- `@mention` matching needs the person's workspace name or email prefix; unmatched mentions are logged to the console, never guessed
+- Without **Allow deletes**, sync is additive for labels, members, and completion (removing in the note never removes in Kan).
+- Auto-sync pulls only; pushes stay manual.
+- Card detail modal is read-mostly (commenting works; edit title/description in Kan or via note push).
+- `@mention` matching needs workspace name or email prefix; unmatched mentions are logged, never guessed.
+- Pull enrichment rebuilds meta tokens; keep important wording in the title portion of the line.
 
 ## Roadmap
 
-- [x] ~~Card↔item ID mapping for rename-safe sync~~ — v0.2.0 (`%%kan:ID%%` markers)
-- [x] ~~Configurable base URL for self-hosted Kan~~ — v0.2.0
-- [x] ~~Drag & drop cards in the board view~~ — v0.2.0
-- [x] ~~Per-card due dates from `📅 YYYY-MM-DD` syntax~~ — v0.2.0 (also `@due(...)`)
-- [x] ~~Label mapping from `#tags`~~ — v0.2.0
-- [x] ~~Auto-sync interval option~~ — v0.2.0 (opt-in via `kan_board` frontmatter)
-- [x] ~~Retro-label cards when tags change on synced items~~ — v0.3.0
-- [x] ~~Card reordering within lists (drag & drop index)~~ — v0.3.0
-- [x] ~~Sub-items → card checklists~~ — v0.3.0
-- [x] ~~Workspace search~~ — v0.3.0
-- [x] ~~Card comments from the editor~~ — v0.3.0
-- [x] ~~Done items move cards to Done list~~ — v0.3.0
-- [x] ~~Two-way sub-item completion (note → Kan checklist items)~~ — v0.4.0
-- [x] ~~Card attachments (files + note snapshots)~~ — v0.4.0
-- [x] ~~Member/assignee sync (`@person` syntax)~~ — v0.5.0
-- [x] ~~Card detail modal (description, comments, activity) in board view~~ — v0.5.0
-- [x] ~~Multi-workspace switcher in board view~~ — v0.5.0
-- [x] ~~Community plugin store submission~~ — v0.5.2 (listed in Obsidian Community plugins)
+- [x] Card↔item ID mapping — v0.2.0
+- [x] Self-hosted base URL, drag & drop, due dates, `#tags`, auto-sync — v0.2.0
+- [x] Retro-label, reordering, sub-items, search, comments, done-move — v0.3.0
+- [x] Two-way subtasks, attachments — v0.4.0
+- [x] Members, card modal, multi-workspace — v0.5.0
+- [x] Community plugin store — v0.5.2
+- [x] Description sync, richer pull, clear due, optional deletes, board/list rename — v0.6.0
 
-**Roadmap complete** as of v0.5.2 — new ideas welcome via issues.
+New ideas welcome via GitHub issues.
 
 ## Changelog
 
+### 0.6.0
+- **Description sync** — indented text under a checklist item becomes the card description
+- **Richer pull** — optional sync of due dates, `#tags`, and `@mentions` from Kan onto note lines
+- **Clear due date** — removing `📅` / `@due()` from a note clears the card due date on push
+- **Members on create** — assignees sent in the create-card call
+- **Optional deletes** — opt-in removal of cards, labels, members, and checklist items
+- **Board & list rename** — rename Kan board/list from note / heading changes; `kan_board_id` frontmatter
+- **Duplicate / delete card** commands
+- README: Sync Conventions fixed; complete usage guide
+
 ### 0.5.2
-- Documented network, account, attachment, and vault disclosures in the README
-- Released with GitHub artifact attestations for `main.js`, `manifest.json`, and `styles.css`
+- Documented network/account disclosures
+- GitHub artifact attestations for release assets
 - Community plugin store submission completed
 
 ### 0.5.1
-- Fix community review: remove the word "Obsidian" from `manifest.json` description
+- Remove "Obsidian" from manifest description (review requirement)
 - MIT license file aligned with README
 
 ### 0.5.0
-- `@mention` member sync: assigns matching workspace members to cards on push (name or email-prefix matching, add-only, unmatched logged)
-- Card detail modal: click a card → description, labels, members, checklists, attachment download links, activity feed, inline commenting
-- Multi-workspace switcher in the board view header
-- 👤 assignee names shown on cards in board view
-- `versions.json` added for community store readiness
+- `@mention` member sync; card detail modal; multi-workspace switcher
+- Assignee names on board cards; `versions.json`
 
 ### 0.4.0
-- Two-way sub-item completion: checked sub-items in the note complete their Kan checklist items on push (`PATCH /checklists/items/{id}`); additive both ways
-- Attachments: attach any file (≤50 MB, presigned S3 flow) or the active note as `.md` to a synced card, from the editor
-- 📎 attachment count badges on cards in the board view
-- Sync notice now reports completed subtasks
+- Two-way sub-item completion; file/note attachments; attachment badges
 
 ### 0.3.0
-- Sub-items (indented checkboxes) sync to card checklists; completed checklist items check off in the note on pull
-- Retro-labeling: tags added to synced items label their cards (add-only)
-- Done items in the note move their cards to the first Done list on push
-- Card comments from the editor (command on marked lines)
-- Workspace-wide fuzzy search (command + 🔍 button); results open their board
-- Drag & drop reordering within a list (drop on a card)
-- Checklist progress (☑ n/m) shown on cards in board view
-- Settings reorganized into Connection / Push / Pull groups with 7 new options
+- Sub-items, retro-labeling, done-move, comments, search, in-list reorder
 
 ### 0.2.0
-- Drag & drop between lists in board view
-- Rename-safe sync via hidden `%%kan:ID%%` markers (+ auto-linking of existing cards)
-- Due dates (`📅` / `@due()`) pushed and updated
-- `#tags` → auto-created coloured Kan labels
-- `Full sync` command (push + pull)
-- Auto-sync interval (opt-in per note via `kan_board` frontmatter)
-- Configurable base URL for self-hosted Kan
-- Label colours rendered in board view
+- Drag & drop, ID markers, due dates, `#tags`, full sync, auto-sync, base URL
 
 ### 0.1.1
-- Fix: workspace detection (unwrap `{role, workspace}` response shape)
+- Fix workspace detection response shape
 
 ### 0.1.0
-- Initial release: board view, push checklist, pull status
+- Initial release: board view, push, pull
 
 ## Development
 
-Plain JavaScript, no build step — `main.js` is the plugin. To hack on it:
+Plain JavaScript, no build step — `main.js` is the plugin.
 
 1. Edit `main.js`
-2. Reload Obsidian (or use the [Hot Reload](https://github.com/pjeby/hot-reload) plugin)
+2. Reload Obsidian (or use [Hot Reload](https://github.com/pjeby/hot-reload))
 3. `node --check main.js` for a quick syntax gate
 
 PRs and issues welcome.
