@@ -4,7 +4,7 @@
 
 [Kan.bn](https://kan.bn) is the open-source alternative to Trello. This plugin turns any Obsidian note with checkboxes into a live kanban board and keeps the two in sync — without ever duplicating your board data locally.
 
-![Version](https://img.shields.io/badge/version-0.7.0-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-0.7.1-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -31,7 +31,7 @@
 
 ## Features
 
-- **Full Kan API coverage (v0.7.0)** — board filters/templates/archive, card editing, workspace admin, invites, permissions, webhook management, Trello/GitHub import.
+- **Full Kan API coverage (v0.7.x)** — board filters/templates/archive, card editing, workspace admin, invites, permissions, webhook management, Trello/GitHub import; slug resolve, named checklists, label colour sync.
 - **Sidebar board view with drag & drop** — browse any Kan board inside Obsidian; drag cards between lists or reorder within a list. Filter by due date, label, or member.
 - **Push checklists to Kan** — headings become lists; unchecked items become cards.
 - **Pull board status into notes** — status table + auto-check completed items; optionally enrich lines with due dates, `#tags`, and `@mentions` from Kan.
@@ -156,6 +156,11 @@ All via Command Palette (`Ctrl/Cmd + P`):
 | `Kan Sync: Attach active note to linked card (cursor line)` | Attach current note as `.md` |
 | `Kan Sync: Duplicate linked card (cursor line)` | Duplicate the card in its list |
 | `Kan Sync: Delete linked card (cursor line)` | Delete card in Kan (requires **Allow deletes on push**) |
+| `Kan Sync: Open Kan Sync settings (admin)` | Jump to Settings → Kan Sync |
+| `Kan Sync: Show Kan instance stats` | Fetch `/stats` (console + notice) |
+| `Kan Sync: Lookup invite code` | Resolve an invite code via the API |
+
+Admin-only board/workspace commands (archive, favorite, templates, import, invite) are also in the palette — see Changelog.
 
 ## Complete usage guide
 
@@ -194,6 +199,10 @@ kan_board: Reminda AI Launch
 |-----|---------|
 | `kan_board` | Board name (defaults to the note file name) |
 | `kan_board_id` | Written automatically on first push — keeps the link if you rename the board/note |
+| `kan_board_slug` | Written on push/pull when the board has a slug; used with workspace slug for lookup |
+| `kan_workspace_slug` | Optional; also filled from Settings → Workspace slug |
+| `kan_template_id` | Create/link from a template board |
+| `kan_labels` | Seed label names when creating a new board |
 
 **Line syntax**
 
@@ -205,7 +214,8 @@ kan_board: Reminda AI Launch
 | `#tag` | Kan label |
 | `@name` | Card member (workspace name / email prefix) |
 | Indented text (not a checkbox) | Card description body |
-| Indented `- [ ]` | Checklist item on the card (“Subtasks”) |
+| Indented `### ChecklistName` | Named checklist on the card (items below use that name) |
+| Indented `- [ ]` | Checklist item on the card (default name: Subtasks) |
 | `%%kan:ID%%` | Link to an existing card (added automatically) |
 
 ### 3. Push
@@ -230,14 +240,17 @@ Move cards, add labels/members/due dates in Kan (web or self-hosted). Collaborat
 
 **Kan Sync: Full sync active note (push + pull)** — push plan changes, then pull execution state.
 
-### 7. Descriptions
+### 7. Descriptions and named checklists
 
 ```markdown
 - [ ] Ship docs #P1
   Audience: new self-hosters.
   Include Docker Compose and MinIO notes.
+  ### Writing
   - [ ] Outline
   - [ ] Screenshots
+  ### Review
+  - [ ] Peer review
 ```
 
 On push, the card description becomes:
@@ -249,6 +262,7 @@ Audience: new self-hosters.
 Include Docker Compose and MinIO notes.
 ```
 
+Indented `###` headings under a card create named Kan checklists; sub-item renames and order are pushed when titles change or items move.
 ### 8. Board and list rename
 
 - Change `kan_board` (or rename the note if you rely on the basename) → next **push** renames the Kan board when **Rename board to match note** is on.
@@ -371,10 +385,19 @@ Errors also go to the developer console (`Ctrl/Cmd + Shift + I`).
 - [x] Community plugin store — v0.5.2
 - [x] Description sync, richer pull, clear due, optional deletes, board/list rename — v0.6.0
 - [x] Full Kan API coverage (board filters/templates, card modal CRUD, workspace admin, webhooks manage, imports) — v0.7.0
+- [x] Slug resolve, named checklists, subtask rename/reorder, label colour sync, admin command wiring — v0.7.1
 
 New ideas welcome via GitHub issues.
 
 ## Changelog
+
+### 0.7.1
+- **Slug-based board resolve** — stores/uses `kan_board_slug` + `kan_workspace_slug` (and Settings workspace slug) on push/pull
+- **Named checklists** — indented `### Name` under a card item maps to a Kan checklist of that name
+- **Subtask rename & reorder** — push updates checklist item titles and indices (positional match when titles change)
+- **Label name/colour sync** — existing `#tags` update Kan label casing and deterministic colour on push
+- **Open Kan Sync settings (admin)** command; stats, invite lookup, get workspace/label, role/member permission inspect in Settings
+- Workspace slug setting (auto-filled by Detect when available)
 
 ### 0.7.0
 - **Full Kan API coverage** — client wraps all documented REST operations
