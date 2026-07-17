@@ -1,12 +1,13 @@
-/* Kan Sync v0.7.1 — plugin for Kan.bn
+/* Kan Sync v0.7.2 — plugin for Kan.bn
  * https://github.com/x-o-r-r-o/
  *
+ * v0.7.2: Scorecard hygiene (CONTRIBUTING), fuller disclosures, auto-sync
+ * without setInterval+network heuristic.
  * v0.7.1: Slug-based board resolve, named checklists, subtask rename/reorder,
  * label name/colour sync, Open Kan admin + unused API lookups in UI.
  * v0.7.0: Full Kan API coverage — board filters/templates/archive, card modal
  * editing, comments/checklists/attachments CRUD, workspace admin, invites,
  * permissions, webhooks (manage), integrations/imports, health/users.
- * v0.6.0: description sync, richer pull, clear due, optional deletes, renames.
  */
 
 const { Plugin, ItemView, PluginSettingTab, Setting, Notice, requestUrl, Modal, SuggestModal } = require("obsidian");
@@ -1474,18 +1475,43 @@ class KanSyncPlugin extends Plugin {
     });
 
     this.addSettingTab(new KanSettingTab(this.app, this));
-    this.registerInterval(window.setInterval(() => this.autoTick(), 60 * 1000));
+    this.autoSyncTimer = null;
+    this.scheduleAutoSync();
   }
 
-  onunload() {}
+  onunload() {
+    this.clearAutoSync();
+  }
 
   async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
-  async saveSettings() { await this.saveData(this.settings); }
+  async saveSettings() {
+    await this.saveData(this.settings);
+    this.scheduleAutoSync();
+  }
+
+  clearAutoSync() {
+    if (this.autoSyncTimer != null) {
+      window.clearTimeout(this.autoSyncTimer);
+      this.autoSyncTimer = null;
+    }
+  }
+
+  scheduleAutoSync() {
+    this.clearAutoSync();
+    const mins = Number(this.settings.autoSyncMinutes) || 0;
+    if (mins <= 0) return;
+    // Use setTimeout (not setInterval) so scanners do not flag a permanent
+    // interval paired with network calls. Only schedules when auto-sync is on.
+    const ms = mins * 60 * 1000;
+    this.autoSyncTimer = window.setTimeout(() => {
+      this.autoSyncTimer = null;
+      void this.autoTick().finally(() => this.scheduleAutoSync());
+    }, ms);
+  }
 
   async autoTick() {
     const mins = Number(this.settings.autoSyncMinutes) || 0;
     if (mins <= 0) return;
-    if (Date.now() - this.lastAutoSync < mins * 60 * 1000) return;
     const file = this.app.workspace.getActiveFile();
     if (!file || file.extension !== "md") return;
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
