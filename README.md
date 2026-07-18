@@ -191,11 +191,11 @@ Use normal Markdown checklists. Headings (`##`–`####`) become Kan lists.
 
 ```markdown
 ---
-kan_board: Reminda AI Launch
+kan_board: Product Launch
 ---
 
 ## Phase 1 — Foundation
-- [ ] Lock the launch date 📅 2026-07-20 #P0 @asim
+- [ ] Lock the launch date 📅 2026-07-20 #P0 @alex
   Confirm with leadership and freeze the calendar.
   - [ ] Draft announcement
   - [ ] Book venue
