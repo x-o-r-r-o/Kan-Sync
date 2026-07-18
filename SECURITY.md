@@ -1,7 +1,7 @@
 ---
 plugin-id: kan-sync
-version: 0.7.2
-last-updated: 2026-07-17
+version: 0.7.3
+last-updated: 2026-07-18
 ---
 
 # Security

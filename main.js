@@ -1,6 +1,8 @@
-/* Kan Sync v0.7.2 — plugin for Kan.bn
+/* Kan Sync v0.7.3 — plugin for Kan.bn
  * https://github.com/x-o-r-r-o/
  *
+ * v0.7.3: Push card index (note order), optional pull descriptions,
+ * admin fields showEmailsToMembers / webhook secret / user image.
  * v0.7.2: Scorecard hygiene (CONTRIBUTING), fuller disclosures, auto-sync
  * without setInterval+network heuristic.
  * v0.7.1: Slug-based board resolve, named checklists, subtask rename/reorder,
@@ -43,6 +45,7 @@ const DEFAULT_SETTINGS = {
   pullDueDates: true,
   pullTags: true,
   pullMentions: true,
+  pullDescriptions: false,
   allowDeletes: false,
   renameBoard: true,
   renameLists: true,
@@ -322,6 +325,74 @@ function buildCardDescription(notePath, body) {
   const header = DESC_PREFIX + notePath;
   const text = (body || "").trim();
   return text ? (header + "\n\n" + text).slice(0, 10000) : header;
+}
+
+/** Strip the "From Obsidian: …" header from a Kan card description → note body. */
+function noteBodyFromCardDescription(desc) {
+  if (!desc) return "";
+  const lines = String(desc).split("\n");
+  let i = 0;
+  if (lines[0] && lines[0].startsWith(DESC_PREFIX)) {
+    i = 1;
+    if (lines[i] === "") i++;
+  }
+  return lines.slice(i).join("\n").replace(/\s+$/, "");
+}
+
+/**
+ * Rewrite indented description blocks under linked checklist items from Kan.
+ * Preserves indented ### checklist headings and sub-checkboxes.
+ */
+function applyPulledDescriptions(content, cardsById) {
+  const lines = content.split("\n");
+  const out = [];
+  let i = 0;
+  let count = 0;
+  let inCode = false;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^```/.test(line.trim())) { inCode = !inCode; out.push(line); i++; continue; }
+    if (inCode) { out.push(line); i++; continue; }
+
+    const top = line.match(/^-\s*\[( |x|X)\]\s+(.*)/);
+    if (top) {
+      out.push(line);
+      const kanId = (top[2].match(MARKER_RE) || [])[1] || null;
+      i++;
+      const block = [];
+      while (i < lines.length) {
+        const L = lines[i];
+        if (/^```/.test(L.trim())) break;
+        if (/^-\s*\[[ xX]\]/.test(L)) break;
+        if (/^#{2,4}\s+/.test(L) && !/^\s/.test(L)) break;
+        block.push(L);
+        i++;
+      }
+      if (!kanId || !cardsById[kanId]) {
+        out.push(...block);
+        continue;
+      }
+      const wantBody = noteBodyFromCardDescription(cardsById[kanId].description || "");
+      const childStart = block.findIndex((L) => /^\s+#{3}\s+/.test(L) || /^\s+-\s*\[[ xX]\]/.test(L));
+      const oldDescLines = childStart === -1 ? block : block.slice(0, childStart);
+      const children = childStart === -1 ? [] : block.slice(childStart);
+      const oldText = oldDescLines.map((L) => L.replace(/^\s+/, "")).filter((L) => L.length).join("\n");
+      if (oldText === wantBody) {
+        out.push(...block);
+        continue;
+      }
+      count++;
+      if (wantBody) {
+        for (const bl of wantBody.split("\n")) out.push("  " + bl);
+      }
+      out.push(...children);
+      continue;
+    }
+    out.push(line);
+    i++;
+  }
+  return { content: out.join("\n"), count };
 }
 
 function memberHandle(m) {
@@ -1955,14 +2026,17 @@ class KanSyncPlugin extends Plugin {
 
       let created = 0, updated = 0, adopted = 0, moved = 0, subAdded = 0, subCompleted = 0, labeled = 0, assigned = 0;
       let deleted = 0, descUpdated = 0, clearedDue = 0, removedLabels = 0, removedMembers = 0, removedSubs = 0;
-      let subRenamed = 0, subReordered = 0;
+      let subRenamed = 0, subReordered = 0, reordered = 0;
       const markers = [];
       const noteCardIds = new Set();
 
       for (const s of sections) {
         const listId = listMap[s.name.toLowerCase()];
+        let indexInList = 0;
         for (const item of s.items) {
           const existing = item.kanId ? cardsById[item.kanId] : cardsByTitle[normTitle(item.title)];
+          const movingToDone = !!(item.done && this.settings.moveDoneCards && firstDoneList);
+          const stayInSection = !movingToDone && !(item.done && doneNames.includes(s.name.toLowerCase()));
 
           if (existing) {
             noteCardIds.add(existing.publicId);
@@ -1984,8 +2058,17 @@ class KanSyncPlugin extends Plugin {
 
             // move card to the section's list if heading changed
             if (listId && cardListName[existing.publicId] !== s.name.toLowerCase()
-              && !(item.done && this.settings.moveDoneCards && firstDoneList)) {
+              && !movingToDone) {
               patch.listPublicId = listId;
+            }
+
+            // Match checklist order within the list (skip cards going to Done)
+            if (stayInSection && listId) {
+              if (existing.index !== indexInList || patch.listPublicId) {
+                patch.index = indexInList;
+                if (existing.index !== indexInList) reordered++;
+              }
+              indexInList++;
             }
 
             if (Object.keys(patch).length) { await this.client.updateCard(existing.publicId, patch); updated++; }
@@ -2053,7 +2136,15 @@ class KanSyncPlugin extends Plugin {
             this.settings.newCardPosition || "end"
           );
           created++;
-          if (nc && nc.publicId) noteCardIds.add(nc.publicId);
+          if (nc && nc.publicId) {
+            noteCardIds.add(nc.publicId);
+            // Place newly created card at the note's position in this list
+            try {
+              await this.client.updateCard(nc.publicId, { index: indexInList });
+              reordered++;
+            } catch (e) { console.warn("Kan card index:", e); }
+            indexInList++;
+          }
           if (this.settings.useIdMarkers && nc && nc.publicId) markers.push({ lineNo: item.lineNo, id: nc.publicId });
           if (memberIds.length) assigned += memberIds.length;
 
@@ -2121,6 +2212,7 @@ class KanSyncPlugin extends Plugin {
       if (removedSubs) bits.push(`${removedSubs} subtasks removed`);
       if (subRenamed) bits.push(`${subRenamed} subtasks renamed`);
       if (subReordered) bits.push(`${subReordered} subtasks reordered`);
+      if (reordered) bits.push(`${reordered} cards reordered`);
       new Notice(`Kan "${boardName}": ${bits.join(", ")}.`);
     } catch (e) {
       new Notice("Kan error: " + e.message, 8000);
@@ -2204,6 +2296,13 @@ class KanSyncPlugin extends Plugin {
         return line;
       }).join("\n");
 
+      let descPulled = 0;
+      if (this.settings.pullDescriptions) {
+        const r = applyPulledDescriptions(content, cardsById);
+        content = r.content;
+        descPulled = r.count;
+      }
+
       const heading = this.settings.statusHeading || DEFAULT_SETTINGS.statusHeading;
       const now = new Date().toISOString().slice(0, 16).replace("T", " ");
       const section = [
@@ -2226,6 +2325,7 @@ class KanSyncPlugin extends Plugin {
       if (!silent) {
         const bits = [`${checked} item(s) checked off`];
         if (enriched) bits.push(`${enriched} enriched`);
+        if (descPulled) bits.push(`${descPulled} descriptions`);
         new Notice(`Kan: status pulled. ${bits.join(", ")}.`);
       }
     } catch (e) {
@@ -2444,6 +2544,14 @@ class KanSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Pull card descriptions")
+      .setDesc("Rewrite indented description text under linked items from the Kan card (keeps sub-checkboxes and ### checklist headings). Off by default so the note stays plan-owned.")
+      .addToggle((t) =>
+        t.setValue(!!this.plugin.settings.pullDescriptions)
+          .onChange(async (v) => { this.plugin.settings.pullDescriptions = v; await this.plugin.saveSettings(); })
+      );
+
+    new Setting(containerEl)
       .setName("Done lists")
       .setDesc("Comma-separated list names treated as 'completed' when pulling status.")
       .addText((t) =>
@@ -2503,8 +2611,12 @@ class KanSettingTab extends PluginSettingTab {
       .addButton((b) => b.setButtonText("Edit").onClick(() => {
         new KanPromptModal(this.app, "Update user", [
           { key: "name", label: "Name", value: "" },
+          { key: "image", label: "Image URL (optional)", value: "", placeholder: "https://…" },
         ], async (v) => {
-          await p.client.updateUser({ name: v.name });
+          const patch = {};
+          if (v.name) patch.name = v.name;
+          if (v.image) patch.image = v.image.trim();
+          await p.client.updateUser(patch);
           new Notice("Profile updated.");
         }).open();
       }));
@@ -2582,12 +2694,19 @@ class KanSettingTab extends PluginSettingTab {
           { key: "slug", label: "Slug", value: "" },
           { key: "description", label: "Description", type: "textarea", value: "" },
           { key: "weekStartDay", label: "Week start day (0-6)", value: "1" },
+          { key: "showEmailsToMembers", label: "Show emails to members", type: "select", value: "", options: [
+            { value: "", label: "(leave unchanged)" },
+            { value: "true", label: "Yes" },
+            { value: "false", label: "No" },
+          ]},
         ], async (v) => {
           const patch = {};
           if (v.name) patch.name = v.name;
           if (v.slug) patch.slug = v.slug;
           if (v.description) patch.description = v.description;
           if (v.weekStartDay !== "") patch.weekStartDay = parseInt(v.weekStartDay, 10);
+          if (v.showEmailsToMembers === "true") patch.showEmailsToMembers = true;
+          if (v.showEmailsToMembers === "false") patch.showEmailsToMembers = false;
           await p.client.updateWorkspace(ws(), patch);
           new Notice("Workspace updated.");
         }).open();
@@ -2781,15 +2900,18 @@ class KanSettingTab extends PluginSettingTab {
           { key: "id", label: "Webhook public ID", value: "" },
           { key: "name", label: "Name", value: "" },
           { key: "url", label: "URL", value: "" },
+          { key: "secret", label: "Secret (optional)", value: "" },
           { key: "active", label: "Active", type: "toggle", value: true },
           { key: "events", label: "Events (comma-separated)", value: WEBHOOK_EVENTS.join(",") },
         ], async (v) => {
-          await p.client.updateWebhook(ws(), v.id.trim(), {
+          const patch = {
             name: v.name || undefined,
             url: v.url || undefined,
             active: v.active,
             events: v.events.split(",").map((s) => s.trim()).filter(Boolean),
-          });
+          };
+          if (v.secret) patch.secret = v.secret;
+          await p.client.updateWebhook(ws(), v.id.trim(), patch);
           new Notice("Webhook updated.");
         }).open();
       }))

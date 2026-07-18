@@ -4,7 +4,7 @@
 
 [Kan.bn](https://kan.bn) is the open-source alternative to Trello. This plugin turns any Obsidian note with checkboxes into a live kanban board and keeps the two in sync — without ever duplicating your board data locally.
 
-![Version](https://img.shields.io/badge/version-0.7.2-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-0.7.3-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -138,6 +138,7 @@ Open **Settings → Kan Sync**.
 | **Pull due dates** | Write `📅 YYYY-MM-DD` from the card | On |
 | **Pull labels as #tags** | Write card labels as `#tags` | On |
 | **Pull members as @mentions** | Write members as `@handles` | On |
+| **Pull card descriptions** | Rewrite indented description text under linked items from Kan (keeps subtasks / `###` headings) | **Off** |
 | **Done lists** | List names treated as completed | `Done, Completed, Launched` |
 | **Status section heading** | Heading for the status table | `## Kan Board Status` |
 | **Include card titles in status** | Off = counts only | On |
@@ -422,6 +423,7 @@ Errors also go to the developer console (`Ctrl/Cmd + Shift + I`).
 - Without **Allow deletes**, sync is additive for labels, members, and completion (removing in the note never removes in Kan).
 - Auto-sync pulls only; pushes stay manual.
 - Card detail modal supports editing title, description, due date, labels, members, checklists, comments, and attachments; list membership and board-wide structure still change mainly via the board view, note push, or Kan’s web UI.
+- **Pull card descriptions** is off by default; when on, Kan description body overwrites indented note text under linked items (subtasks preserved).
 - Inbound Kan webhooks cannot be received inside Obsidian — Settings only manages webhook endpoints on Kan.
 - `@mention` matching needs workspace name or email prefix; unmatched mentions are logged, never guessed.
 - Pull enrichment rebuilds meta tokens; keep important wording in the title portion of the line.
@@ -438,10 +440,16 @@ Errors also go to the developer console (`Ctrl/Cmd + Shift + I`).
 - [x] Full Kan API coverage (board filters/templates, card modal CRUD, workspace admin, webhooks manage, imports) — v0.7.0
 - [x] Slug resolve, named checklists, subtask rename/reorder, label colour sync, admin command wiring — v0.7.1
 - [x] Scorecard disclosures / CONTRIBUTING / auto-sync timer hygiene — v0.7.2
+- [x] Card order on push, optional pull descriptions, admin field fill-ins — v0.7.3
 
 New ideas welcome via GitHub issues.
 
 ## Changelog
+
+### 0.7.3
+- **Card order on push** — sets each card’s `index` to match checklist order within its list
+- **Pull card descriptions** (optional, off by default) — rewrites indented description text under linked items from Kan; keeps sub-checkboxes and named `###` checklists
+- **Admin forms** — workspace `showEmailsToMembers`, webhook update `secret`, user `image` URL
 
 ### 0.7.2
 - **Scorecard hygiene** — add `CONTRIBUTING.md` and `SECURITY.md`
