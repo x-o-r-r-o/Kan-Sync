@@ -42,7 +42,7 @@
 - **Card descriptions** — indented text under an item (not a sub-checkbox) syncs to the card description.
 - **Sub-items → card checklists** — two-way completion; optional delete of removed sub-items.
 - **Attachments** — attach a file or the active note to a synced card.
-- **Card detail modal** — description, labels, members, checklists, attachments, activity, inline comments.
+- **Card detail modal** — edit title/description/due, toggle labels/members, checklist CRUD, attachments, activity, inline comments.
 - **Multi-workspace switcher** — switch workspaces from the board view header.
 - **Board & list rename** — renaming the note / `kan_board` or a heading can rename the Kan board / list on push.
 - **Optional deletes** — opt-in removal of cards, labels, members, and checklist items that disappear from the note.
@@ -110,6 +110,7 @@ Open **Settings → Kan Sync**.
 | **API key** | Create at [kan.bn/settings](https://kan.bn/settings) → API keys | — |
 | **Base URL** | Change for self-hosted Kan | `https://kan.bn/api/v1` |
 | **Workspace** | Workspace public ID — use **Detect** to auto-fill | — |
+| **Workspace slug** | Optional; used with `kan_board_slug` for slug-based board lookup (Detect fills this when available) | — |
 
 ### Push (note → Kan)
 
@@ -122,9 +123,11 @@ Open **Settings → Kan Sync**.
 | **Sync card descriptions** | Indented text under an item → card description | On |
 | **Rename board to match note** | Rename Kan board when note / `kan_board` changes; writes `kan_board_id` | On |
 | **Rename lists to match headings** | Rename Kan list when a heading changes | On |
+| **Reorder lists to match heading order** | On push, reorder Kan lists to match heading order in the note | On |
+| **New card position** | Where new cards are inserted in a list (`start` or `end`) | `end` |
 | **Allow deletes on push** | Remove Kan cards/labels/members/subtasks that disappear from the note | **Off** |
 | **Sync sub-items as card checklists** | Indented checkboxes → checklist | On |
-| **Subtask checklist name** | Checklist name on the card | `Subtasks` |
+| **Subtask checklist name** | Default checklist name on the card (named checklists use indented `###`) | `Subtasks` |
 | **Move done cards** | Checked note items move cards to first Done list | On |
 | **Default list name** | List for items before any heading | `Backlog` |
 
@@ -139,6 +142,10 @@ Open **Settings → Kan Sync**.
 | **Status section heading** | Heading for the status table | `## Kan Board Status` |
 | **Include card titles in status** | Off = counts only | On |
 | **Auto-sync interval (minutes)** | `0` = off; auto-pull when note has `kan_board` frontmatter | `0` |
+
+Board view header (not in Settings) also remembers **board type** (regular / template), **archived** visibility, and **due-date filter**.
+
+Settings → Kan Sync also has an **admin** section (account, workspace CRUD, invites, roles/permissions, webhooks, integrations/imports, labels). Open it via **Kan Sync: Open Kan Sync settings (admin)**.
 
 ## Commands
 
@@ -156,12 +163,18 @@ All via Command Palette (`Ctrl/Cmd + P`):
 | `Kan Sync: Attach active note to linked card (cursor line)` | Attach current note as `.md` |
 | `Kan Sync: Duplicate linked card (cursor line)` | Duplicate the card in its list |
 | `Kan Sync: Delete linked card (cursor line)` | Delete card in Kan (requires **Allow deletes on push**) |
+| `Kan Sync: Test connection` | Calls `/health` and `/users/me` |
 | `Kan Sync: Open Kan Sync settings (admin)` | Jump to Settings → Kan Sync |
 | `Kan Sync: Show Kan instance stats` | Fetch `/stats` (console + notice) |
 | `Kan Sync: Lookup invite code` | Resolve an invite code via the API |
-
-Admin-only board/workspace commands (archive, favorite, templates, import, invite) are also in the palette — see Changelog.
-
+| `Kan Sync: Invite member to workspace` | Invite by email |
+| `Kan Sync: Copy workspace invite link` | Copy invite URL/code to the clipboard |
+| `Kan Sync: Import boards from Trello` | Start Trello import flow |
+| `Kan Sync: Import projects from GitHub` | Start GitHub import flow |
+| `Kan Sync: Archive / unarchive board for active note` | Toggle archive on the linked board |
+| `Kan Sync: Favorite / unfavorite board for active note` | Toggle favorite on the linked board |
+| `Kan Sync: Create board from template (active note)` | Uses `kan_template_id` frontmatter |
+| `Kan Sync: Save linked board as template` | Create a template board from the linked board |
 ## Complete usage guide
 
 ### 1. Connect once
@@ -356,29 +369,36 @@ Settings can create/update/test/delete Kan webhook endpoints. Obsidian cannot re
 
 ## API Endpoints Used
 
+Core sync and board-view paths (not every admin/import route). The plugin client wraps the full Kan REST surface used by Settings admin, card modal CRUD, webhooks, and imports — see [docs.kan.bn/api-reference](https://docs.kan.bn/api-reference/introduction).
+
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
+| `/health`, `/stats`, `/users/me` | GET | Connection test / stats |
 | `/workspaces` | GET | Detect workspace |
+| `/workspaces/{id}` | GET / PUT / DELETE | Workspace admin |
 | `/workspaces/{id}/boards` | GET / POST | List / create boards |
-| `/boards/{id}` | GET / PUT | Fetch / rename board |
+| `/workspaces/{slug}/boards/{boardSlug}` | GET | Resolve board by slug |
+| `/boards/{id}` | GET / PUT / DELETE | Fetch / update / delete board |
 | `/lists` | POST | Create lists |
-| `/lists/{id}` | PUT | Rename / reorder lists |
+| `/lists/{id}` | PUT / DELETE | Rename / reorder / delete lists |
 | `/cards` | POST | Create cards (labels + members) |
 | `/cards/{id}` | GET / PUT / DELETE | Detail, update, delete |
 | `/cards/{id}/duplicate` | POST | Duplicate card |
 | `/cards/{id}/labels/{labelId}` | PUT | Toggle label |
 | `/cards/{id}/members/{memberId}` | PUT | Toggle member |
-| `/cards/{id}/comments` | POST | Comment |
+| `/cards/{id}/comments` | GET / POST | Comments |
 | `/cards/{id}/checklists` | POST | Create checklist |
 | `/checklists/{id}/items` | POST | Add checklist item |
 | `/checklists/items/{id}` | PATCH / DELETE | Update / delete checklist item |
 | `/workspaces/{id}/search` | GET | Search |
 | `/labels` | POST | Create labels |
+| `/labels/{id}` | GET / PUT / DELETE | Label detail / update / delete |
 | `/cards/{id}/attachments/upload-url` | POST | Presigned upload URL |
 | `/cards/{id}/attachments/confirm` | POST | Confirm attachment |
 | `/cards/{id}/activities` | GET | Activity feed |
-
-Full API docs: [docs.kan.bn/api-reference](https://docs.kan.bn/api-reference/introduction)
+| `/workspaces/{id}/webhooks` | GET / POST | Webhook manage |
+| `/workspaces/{id}/members/…`, `/invites/…` | various | Invites and members |
+| `/integrations/…`, import routes | various | Trello / GitHub import |
 
 ## Troubleshooting
 
@@ -392,6 +412,7 @@ Full API docs: [docs.kan.bn/api-reference](https://docs.kan.bn/api-reference/int
 | Duplicate cards after rewording | Turn on ID markers and push once to adopt |
 | Pull didn't add tags/due | Enable Pull due dates / tags / mentions; line needs a `%%kan:ID%%` marker |
 | Delete command refused | Enable **Allow deletes on push** |
+| Slug lookup failed | Set **Workspace slug** (or `kan_workspace_slug`) and ensure the board has a slug |
 | Plugin not listed after manual install | Reload; ensure files sit directly in `.obsidian/plugins/kan-sync/` |
 
 Errors also go to the developer console (`Ctrl/Cmd + Shift + I`).
@@ -400,10 +421,11 @@ Errors also go to the developer console (`Ctrl/Cmd + Shift + I`).
 
 - Without **Allow deletes**, sync is additive for labels, members, and completion (removing in the note never removes in Kan).
 - Auto-sync pulls only; pushes stay manual.
-- Card detail modal is read-mostly (commenting works; edit title/description in Kan or via note push).
+- Card detail modal supports editing title, description, due date, labels, members, checklists, comments, and attachments; list membership and board-wide structure still change mainly via the board view, note push, or Kan’s web UI.
+- Inbound Kan webhooks cannot be received inside Obsidian — Settings only manages webhook endpoints on Kan.
 - `@mention` matching needs workspace name or email prefix; unmatched mentions are logged, never guessed.
 - Pull enrichment rebuilds meta tokens; keep important wording in the title portion of the line.
-
+- Sub-item renames without ID markers use title + positional matching; large checklist reshuffles can mis-pair items.
 ## Roadmap
 
 - [x] Card↔item ID mapping — v0.2.0
