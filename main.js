@@ -1,15 +1,12 @@
-/* Kan Sync v0.7.3 — plugin for Kan.bn
+/* Kan Sync v0.7.4 — plugin for Kan.bn
  * https://github.com/x-o-r-r-o/
  *
+ * v0.7.4: Security hardening — URL allowlists, path encoding, filename
+ * sanitization, CSS color validation, markdown table escaping.
  * v0.7.3: Push card index (note order), optional pull descriptions,
  * admin fields showEmailsToMembers / webhook secret / user image.
  * v0.7.2: Scorecard hygiene (CONTRIBUTING), fuller disclosures, auto-sync
  * without setInterval+network heuristic.
- * v0.7.1: Slug-based board resolve, named checklists, subtask rename/reorder,
- * label name/colour sync, Open Kan admin + unused API lookups in UI.
- * v0.7.0: Full Kan API coverage — board filters/templates/archive, card modal
- * editing, comments/checklists/attachments CRUD, workspace admin, invites,
- * permissions, webhooks (manage), integrations/imports, health/users.
  */
 
 const { Plugin, ItemView, PluginSettingTab, Setting, Notice, requestUrl, Modal, SuggestModal } = require("obsidian");
@@ -86,8 +83,12 @@ class KanClient {
   async req(method, path, body) {
     const { apiKey, baseUrl } = this.getSettings();
     if (!apiKey) throw new Error("No API key set (Settings → Kan Sync).");
+    if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//")) {
+      throw new Error("Invalid API path.");
+    }
+    const base = normalizeApiBaseUrl(baseUrl);
     const res = await requestUrl({
-      url: (baseUrl || DEFAULT_SETTINGS.baseUrl).replace(/\/$/, "") + path,
+      url: base + path,
       method,
       headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
       body: body ? JSON.stringify(body) : undefined,
@@ -96,7 +97,8 @@ class KanClient {
     if (res.status >= 400) {
       let msg = "";
       try { msg = (res.json && res.json.message) || res.text || ""; } catch (e) { /* ignore */ }
-      throw new Error(`Kan API ${res.status} on ${method} ${path}: ${String(msg).slice(0, 200)}`);
+      // Never echo Authorization material; truncate server message
+      throw new Error(`Kan API ${res.status} on ${method} ${path}: ${String(msg).replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 200)}`);
     }
     return res.json;
   }
@@ -113,28 +115,28 @@ class KanClient {
     const raw = await this.req("GET", "/workspaces");
     return (raw || []).map((w) => (w && w.workspace) ? w.workspace : w).filter(Boolean);
   }
-  getWorkspace(wsId) { return this.req("GET", `/workspaces/${wsId}`); }
+  getWorkspace(wsId) { return this.req("GET", `/workspaces/${encId(wsId)}`); }
   getWorkspaceBySlug(slug) { return this.req("GET", `/workspaces/${encodeURIComponent(slug)}`); }
   createWorkspace(body) { return this.req("POST", "/workspaces", body); }
-  updateWorkspace(wsId, patch) { return this.req("PUT", `/workspaces/${wsId}`, patch); }
-  deleteWorkspace(wsId) { return this.req("DELETE", `/workspaces/${wsId}`); }
+  updateWorkspace(wsId, patch) { return this.req("PUT", `/workspaces/${encId(wsId)}`, patch); }
+  deleteWorkspace(wsId) { return this.req("DELETE", `/workspaces/${encId(wsId)}`); }
   checkWorkspaceSlug(slug) {
     return this.req("GET", `/workspaces/check-slug-availability${qs({ workspaceSlug: slug })}`);
   }
 
   // ---- boards ----
   getBoards(wsId, opts) {
-    return this.req("GET", `/workspaces/${wsId}/boards${qs(opts || {})}`);
+    return this.req("GET", `/workspaces/${encId(wsId)}/boards${qs(opts || {})}`);
   }
   getBoard(boardId, filters) {
-    return this.req("GET", `/boards/${boardId}${qs(filters || {})}`);
+    return this.req("GET", `/boards/${encId(boardId)}${qs(filters || {})}`);
   }
   getBoardBySlug(wsSlug, boardSlug, filters) {
     return this.req("GET", `/workspaces/${encodeURIComponent(wsSlug)}/boards/${encodeURIComponent(boardSlug)}${qs(filters || {})}`);
   }
   createBoard(wsId, name, listNames, opts) {
     opts = opts || {};
-    return this.req("POST", `/workspaces/${wsId}/boards`, {
+    return this.req("POST", `/workspaces/${encId(wsId)}/boards`, {
       name,
       lists: listNames || [],
       labels: opts.labels || [],
@@ -142,19 +144,19 @@ class KanClient {
       sourceBoardPublicId: opts.sourceBoardPublicId,
     });
   }
-  updateBoard(boardId, patch) { return this.req("PUT", `/boards/${boardId}`, patch); }
-  deleteBoard(boardId) { return this.req("DELETE", `/boards/${boardId}`); }
+  updateBoard(boardId, patch) { return this.req("PUT", `/boards/${encId(boardId)}`, patch); }
+  deleteBoard(boardId) { return this.req("DELETE", `/boards/${encId(boardId)}`); }
   checkBoardSlug(boardId, boardSlug) {
-    return this.req("GET", `/boards/${boardId}/check-slug-availability${qs({ boardSlug })}`);
+    return this.req("GET", `/boards/${encId(boardId)}/check-slug-availability${qs({ boardSlug })}`);
   }
   moveBoard(boardId, targetWorkspacePublicId) {
-    return this.req("POST", `/boards/${boardId}/move`, { targetWorkspacePublicId });
+    return this.req("POST", `/boards/${encId(boardId)}/move`, { targetWorkspacePublicId });
   }
 
   // ---- lists ----
   createList(boardId, name) { return this.req("POST", "/lists", { name, boardPublicId: boardId }); }
-  updateList(listId, patch) { return this.req("PUT", `/lists/${listId}`, patch); }
-  deleteList(listId) { return this.req("DELETE", `/lists/${listId}`); }
+  updateList(listId, patch) { return this.req("PUT", `/lists/${encId(listId)}`, patch); }
+  deleteList(listId) { return this.req("DELETE", `/lists/${encId(listId)}`); }
 
   // ---- cards ----
   createCard(listId, title, description, dueDate, labelPublicIds, memberPublicIds, position) {
@@ -168,9 +170,9 @@ class KanClient {
       dueDate: dueDate || null,
     });
   }
-  getCard(cardId) { return this.req("GET", `/cards/${cardId}`); }
-  updateCard(cardId, patch) { return this.req("PUT", `/cards/${cardId}`, patch); }
-  deleteCard(cardId) { return this.req("DELETE", `/cards/${cardId}`); }
+  getCard(cardId) { return this.req("GET", `/cards/${encId(cardId)}`); }
+  updateCard(cardId, patch) { return this.req("PUT", `/cards/${encId(cardId)}`, patch); }
+  deleteCard(cardId) { return this.req("DELETE", `/cards/${encId(cardId)}`); }
   duplicateCard(cardId, listPublicId, opts) {
     opts = opts || {};
     const body = {
@@ -181,102 +183,123 @@ class KanClient {
     };
     if (opts.title) body.title = opts.title;
     if (opts.index !== undefined && opts.index !== null) body.index = opts.index;
-    return this.req("POST", `/cards/${cardId}/duplicate`, body);
+    return this.req("POST", `/cards/${encId(cardId)}/duplicate`, body);
   }
   getCardActivities(cardId, limit, cursor) {
-    return this.req("GET", `/cards/${cardId}/activities${qs({ limit: limit || 20, cursor })}`);
+    return this.req("GET", `/cards/${encId(cardId)}/activities${qs({ limit: limit || 20, cursor })}`);
   }
-  toggleCardLabel(cardId, labelId) { return this.req("PUT", `/cards/${cardId}/labels/${labelId}`); }
-  toggleCardMember(cardId, memberId) { return this.req("PUT", `/cards/${cardId}/members/${memberId}`); }
-  addComment(cardId, comment) { return this.req("POST", `/cards/${cardId}/comments`, { comment }); }
+  toggleCardLabel(cardId, labelId) { return this.req("PUT", `/cards/${encId(cardId)}/labels/${encId(labelId)}`); }
+  toggleCardMember(cardId, memberId) { return this.req("PUT", `/cards/${encId(cardId)}/members/${encId(memberId)}`); }
+  addComment(cardId, comment) { return this.req("POST", `/cards/${encId(cardId)}/comments`, { comment: String(comment || "").slice(0, 10000) }); }
   updateComment(cardId, commentId, comment) {
-    return this.req("PUT", `/cards/${cardId}/comments/${commentId}`, { comment });
+    return this.req("PUT", `/cards/${encId(cardId)}/comments/${encId(commentId)}`, { comment: String(comment || "").slice(0, 10000) });
   }
-  deleteComment(cardId, commentId) { return this.req("DELETE", `/cards/${cardId}/comments/${commentId}`); }
+  deleteComment(cardId, commentId) { return this.req("DELETE", `/cards/${encId(cardId)}/comments/${encId(commentId)}`); }
 
   // ---- checklists ----
-  createChecklist(cardId, name) { return this.req("POST", `/cards/${cardId}/checklists`, { name: name.slice(0, 255) }); }
-  updateChecklist(checklistId, patch) { return this.req("PUT", `/checklists/${checklistId}`, patch); }
-  deleteChecklist(checklistId) { return this.req("DELETE", `/checklists/${checklistId}`); }
-  addChecklistItem(checklistId, title) { return this.req("POST", `/checklists/${checklistId}/items`, { title: title.slice(0, 500) }); }
-  updateChecklistItem(itemId, patch) { return this.req("PATCH", `/checklists/items/${itemId}`, patch); }
-  deleteChecklistItem(itemId) { return this.req("DELETE", `/checklists/items/${itemId}`); }
+  createChecklist(cardId, name) { return this.req("POST", `/cards/${encId(cardId)}/checklists`, { name: name.slice(0, 255) }); }
+  updateChecklist(checklistId, patch) { return this.req("PUT", `/checklists/${encId(checklistId)}`, patch); }
+  deleteChecklist(checklistId) { return this.req("DELETE", `/checklists/${encId(checklistId)}`); }
+  addChecklistItem(checklistId, title) { return this.req("POST", `/checklists/${encId(checklistId)}/items`, { title: title.slice(0, 500) }); }
+  updateChecklistItem(itemId, patch) { return this.req("PATCH", `/checklists/items/${encId(itemId)}`, patch); }
+  deleteChecklistItem(itemId) { return this.req("DELETE", `/checklists/items/${encId(itemId)}`); }
 
   // ---- labels ----
   createLabel(boardId, name, colourCode) {
-    return this.req("POST", "/labels", { name: name.slice(0, 36), boardPublicId: boardId, colourCode });
+    const colour = sanitizeCssColor(colourCode) || labelColour(name);
+    return this.req("POST", "/labels", { name: name.slice(0, 36), boardPublicId: boardId, colourCode: colour });
   }
-  getLabel(labelId) { return this.req("GET", `/labels/${labelId}`); }
-  updateLabel(labelId, patch) { return this.req("PUT", `/labels/${labelId}`, patch); }
-  deleteLabel(labelId) { return this.req("DELETE", `/labels/${labelId}`); }
+  getLabel(labelId) { return this.req("GET", `/labels/${encId(labelId)}`); }
+  updateLabel(labelId, patch) {
+    const body = Object.assign({}, patch);
+    if (body.colourCode != null) {
+      const c = sanitizeCssColor(body.colourCode);
+      if (!c) delete body.colourCode;
+      else body.colourCode = c;
+    }
+    return this.req("PUT", `/labels/${encId(labelId)}`, body);
+  }
+  deleteLabel(labelId) { return this.req("DELETE", `/labels/${encId(labelId)}`); }
 
   // ---- attachments ----
   getAttachmentUploadUrl(cardId, filename, contentType, size) {
-    return this.req("POST", `/cards/${cardId}/attachments/upload-url`, { filename: filename.slice(0, 255), contentType, size });
-  }
-  confirmAttachment(cardId, s3Key, filename, contentType, size) {
-    return this.req("POST", `/cards/${cardId}/attachments/confirm`, {
-      s3Key, filename: filename.slice(0, 255), originalFilename: filename.slice(0, 255), contentType, size,
+    return this.req("POST", `/cards/${encId(cardId)}/attachments/upload-url`, {
+      filename: sanitizeFilename(filename).slice(0, 255),
+      contentType: sanitizeContentType(contentType),
+      size,
     });
   }
-  deleteAttachment(attachmentId) { return this.req("DELETE", `/attachments/${attachmentId}`); }
+  confirmAttachment(cardId, s3Key, filename, contentType, size) {
+    const safe = sanitizeFilename(filename).slice(0, 255);
+    return this.req("POST", `/cards/${encId(cardId)}/attachments/confirm`, {
+      s3Key, filename: safe, originalFilename: safe, contentType: sanitizeContentType(contentType), size,
+    });
+  }
+  deleteAttachment(attachmentId) { return this.req("DELETE", `/attachments/${encId(attachmentId)}`); }
   async uploadToPresigned(url, data, contentType) {
-    const res = await requestUrl({ url, method: "PUT", headers: { "Content-Type": contentType }, body: data, throw: false });
+    const safeUrl = assertSafeExternalUrl(url, "upload URL");
+    const res = await requestUrl({
+      url: safeUrl,
+      method: "PUT",
+      headers: { "Content-Type": sanitizeContentType(contentType) },
+      body: data,
+      throw: false,
+    });
     if (res.status >= 400) throw new Error(`S3 upload failed (${res.status})`);
   }
 
   // ---- search ----
   search(wsId, query, limit) {
-    return this.req("GET", `/workspaces/${wsId}/search${qs({ query: String(query).slice(0, 100), limit: limit || 20 })}`);
+    return this.req("GET", `/workspaces/${encId(wsId)}/search${qs({ query: String(query).slice(0, 100), limit: limit || 20 })}`);
   }
 
   // ---- members / invites ----
   inviteMember(wsId, email) {
-    return this.req("POST", `/workspaces/${wsId}/members/invite`, { email });
+    return this.req("POST", `/workspaces/${encId(wsId)}/members/invite`, { email });
   }
-  removeMember(wsId, memberId) { return this.req("DELETE", `/workspaces/${wsId}/members/${memberId}`); }
+  removeMember(wsId, memberId) { return this.req("DELETE", `/workspaces/${encId(wsId)}/members/${encId(memberId)}`); }
   updateMemberRole(wsId, memberId, role) {
-    return this.req("PUT", `/workspaces/${wsId}/members/${memberId}/role`, { role });
+    return this.req("PUT", `/workspaces/${encId(wsId)}/members/${encId(memberId)}/role`, { role });
   }
-  getInviteLink(wsId) { return this.req("GET", `/workspaces/${wsId}/invite`); }
-  createInviteLink(wsId) { return this.req("POST", `/workspaces/${wsId}/invites`); }
-  deactivateInviteLink(wsId) { return this.req("DELETE", `/workspaces/${wsId}/invites`); }
+  getInviteLink(wsId) { return this.req("GET", `/workspaces/${encId(wsId)}/invite`); }
+  createInviteLink(wsId) { return this.req("POST", `/workspaces/${encId(wsId)}/invites`); }
+  deactivateInviteLink(wsId) { return this.req("DELETE", `/workspaces/${encId(wsId)}/invites`); }
   getInviteInfo(code) { return this.req("GET", `/invites/${encodeURIComponent(code)}`); }
   acceptInvite(inviteCode) { return this.req("POST", "/invites/accept", { inviteCode }); }
 
   // ---- permissions ----
-  getMyPermissions(wsId) { return this.req("GET", `/workspaces/${wsId}/permissions/me`); }
-  getRoles(wsId) { return this.req("GET", `/workspaces/${wsId}/roles`); }
-  getWorkspaceRolePermissions(wsId) { return this.req("GET", `/workspaces/${wsId}/roles/permissions`); }
-  getRolePermissions(wsId, roleId) { return this.req("GET", `/workspaces/${wsId}/roles/${roleId}/permissions`); }
+  getMyPermissions(wsId) { return this.req("GET", `/workspaces/${encId(wsId)}/permissions/me`); }
+  getRoles(wsId) { return this.req("GET", `/workspaces/${encId(wsId)}/roles`); }
+  getWorkspaceRolePermissions(wsId) { return this.req("GET", `/workspaces/${encId(wsId)}/roles/permissions`); }
+  getRolePermissions(wsId, roleId) { return this.req("GET", `/workspaces/${encId(wsId)}/roles/${encId(roleId)}/permissions`); }
   getMemberPermissions(wsId, memberId) {
-    return this.req("GET", `/workspaces/${wsId}/members/${memberId}/permissions`);
+    return this.req("GET", `/workspaces/${encId(wsId)}/members/${encId(memberId)}/permissions`);
   }
   grantRolePermission(wsId, roleId, permission) {
-    return this.req("POST", `/workspaces/${wsId}/roles/${roleId}/permissions/grant`, { permission });
+    return this.req("POST", `/workspaces/${encId(wsId)}/roles/${encId(roleId)}/permissions/grant`, { permission });
   }
   revokeRolePermission(wsId, roleId, permission) {
-    return this.req("POST", `/workspaces/${wsId}/roles/${roleId}/permissions/revoke`, { permission });
+    return this.req("POST", `/workspaces/${encId(wsId)}/roles/${encId(roleId)}/permissions/revoke`, { permission });
   }
   grantMemberPermission(wsId, memberId, permission) {
-    return this.req("POST", `/workspaces/${wsId}/members/${memberId}/permissions/grant`, { permission });
+    return this.req("POST", `/workspaces/${encId(wsId)}/members/${encId(memberId)}/permissions/grant`, { permission });
   }
   revokeMemberPermission(wsId, memberId, permission) {
-    return this.req("POST", `/workspaces/${wsId}/members/${memberId}/permissions/revoke`, { permission });
+    return this.req("POST", `/workspaces/${encId(wsId)}/members/${encId(memberId)}/permissions/revoke`, { permission });
   }
   resetMemberPermissions(wsId, memberId) {
-    return this.req("POST", `/workspaces/${wsId}/members/${memberId}/permissions/reset`);
+    return this.req("POST", `/workspaces/${encId(wsId)}/members/${encId(memberId)}/permissions/reset`);
   }
   resetAllMemberPermissions(wsId) {
-    return this.req("POST", `/workspaces/${wsId}/members/permissions/reset`);
+    return this.req("POST", `/workspaces/${encId(wsId)}/members/permissions/reset`);
   }
 
   // ---- webhooks ----
-  getWebhooks(wsId) { return this.req("GET", `/workspaces/${wsId}/webhooks`); }
-  createWebhook(wsId, body) { return this.req("POST", `/workspaces/${wsId}/webhooks`, body); }
-  updateWebhook(wsId, webhookId, patch) { return this.req("PUT", `/workspaces/${wsId}/webhooks/${webhookId}`, patch); }
-  deleteWebhook(wsId, webhookId) { return this.req("DELETE", `/workspaces/${wsId}/webhooks/${webhookId}`); }
-  testWebhook(wsId, webhookId) { return this.req("POST", `/workspaces/${wsId}/webhooks/${webhookId}/test`); }
+  getWebhooks(wsId) { return this.req("GET", `/workspaces/${encId(wsId)}/webhooks`); }
+  createWebhook(wsId, body) { return this.req("POST", `/workspaces/${encId(wsId)}/webhooks`, body); }
+  updateWebhook(wsId, webhookId, patch) { return this.req("PUT", `/workspaces/${encId(wsId)}/webhooks/${encId(webhookId)}`, patch); }
+  deleteWebhook(wsId, webhookId) { return this.req("DELETE", `/workspaces/${encId(wsId)}/webhooks/${encId(webhookId)}`); }
+  testWebhook(wsId, webhookId) { return this.req("POST", `/workspaces/${encId(wsId)}/webhooks/${encId(webhookId)}/test`); }
 
   // ---- integrations / imports ----
   getIntegrationProviders() { return this.req("GET", "/integration/providers"); }
@@ -295,8 +318,85 @@ class KanClient {
 }
 
 const MAX_ATTACHMENT = 52428800; // 50 MB API limit
+const SAFE_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+const SAFE_CONTENT_TYPE_RE = /^[\w.+-]+\/[\w.+-]+$/;
+const BLOCKED_HOSTS = new Set([
+  "metadata.google.internal",
+  "metadata.goog",
+  "169.254.169.254",
+]);
 
-/* ---------------- helpers ---------------- */
+/* ---------------- security helpers ---------------- */
+
+function encId(id) {
+  return encodeURIComponent(String(id == null ? "" : id));
+}
+
+function escapeMdCell(s) {
+  return String(s == null ? "" : s).replace(/\|/g, "\\|").replace(/[\r\n]+/g, " ").slice(0, 300);
+}
+
+function sanitizeFilename(name) {
+  let n = String(name || "attachment.bin").replace(/\\/g, "/");
+  n = n.split("/").pop() || "attachment.bin";
+  n = n.replace(/[\u0000-\u001f<>:"|?*]/g, "_").replace(/^\.+/g, "").trim();
+  if (!n || n === "." || n === "..") n = "attachment.bin";
+  return n.slice(0, 180);
+}
+
+function sanitizeCssColor(c) {
+  const s = String(c || "").trim();
+  return SAFE_COLOR_RE.test(s) ? s : null;
+}
+
+function sanitizeContentType(ct) {
+  const s = String(ct || "application/octet-stream").trim().split(";")[0].trim();
+  return SAFE_CONTENT_TYPE_RE.test(s) ? s : "application/octet-stream";
+}
+
+function isLocalHostname(host) {
+  const h = String(host || "").toLowerCase().replace(/^\[|\]$/g, "");
+  return h === "localhost" || h === "127.0.0.1" || h === "::1";
+}
+
+/** Validate plugin Base URL (https, or http://localhost for self-host). */
+function normalizeApiBaseUrl(raw) {
+  const s = String(raw || DEFAULT_SETTINGS.baseUrl).trim().replace(/\/$/, "");
+  let u;
+  try { u = new URL(s); } catch (e) { throw new Error("Invalid Base URL."); }
+  if (u.username || u.password) throw new Error("Base URL must not include credentials.");
+  if (u.protocol === "https:") { /* ok */ }
+  else if (u.protocol === "http:" && isLocalHostname(u.hostname)) { /* local self-host */ }
+  else throw new Error("Base URL must be https:// (or http://localhost for local self-host).");
+  if (BLOCKED_HOSTS.has(u.hostname.toLowerCase())) throw new Error("Base URL host is not allowed.");
+  return s;
+}
+
+/**
+ * Validate http(s) URLs returned by Kan (presigned upload, attachment download, OAuth).
+ * Blocks javascript:/data:/file: and credentialed URLs. Prefer https; allow http only for localhost.
+ */
+function assertSafeExternalUrl(raw, purpose) {
+  const label = purpose || "URL";
+  let u;
+  try { u = new URL(String(raw || "")); } catch (e) { throw new Error(`Invalid ${label}.`); }
+  if (u.username || u.password) throw new Error(`${label} must not include credentials.`);
+  if (u.protocol === "https:") { /* ok */ }
+  else if (u.protocol === "http:" && isLocalHostname(u.hostname)) { /* ok */ }
+  else throw new Error(`${label} must be https://.`);
+  const host = u.hostname.toLowerCase();
+  if (BLOCKED_HOSTS.has(host) || host === "0.0.0.0") throw new Error(`${label} host is not allowed.`);
+  return u.href;
+}
+
+function openSafeExternalUrl(raw) {
+  const href = assertSafeExternalUrl(raw, "authorization URL");
+  window.open(href, "_blank", "noopener,noreferrer");
+}
+
+/* ---------------- shared helpers ---------------- */
+
+const MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT;
 
 function cleanText(s) {
   return s
@@ -336,7 +436,7 @@ function noteBodyFromCardDescription(desc) {
     i = 1;
     if (lines[i] === "") i++;
   }
-  return lines.slice(i).join("\n").replace(/\s+$/, "");
+  return lines.slice(i).join("\n").replace(/\s+$/, "").slice(0, 10000);
 }
 
 /**
@@ -776,7 +876,10 @@ class KanCardModal extends Modal {
     const labelSource = boardLabels.length ? boardLabels : (card.labels || []);
     for (const l of labelSource) {
       const span = lblRow.createEl("button", { cls: "kan-label", text: (haveLabels.has(l.publicId) ? "✓ " : "") + l.name });
-      if (l.colourCode) span.style.background = l.colourCode + "33";
+      if (l.colourCode) {
+        const c = sanitizeCssColor(l.colourCode);
+        if (c) span.style.background = c + "33";
+      }
       span.onclick = async () => {
         try {
           await this.plugin.client.toggleCardLabel(this.cardId, l.publicId);
@@ -882,9 +985,18 @@ class KanCardModal extends Modal {
     const ul = contentEl.createEl("ul", { cls: "kan-modal-checklist" });
     for (const a of card.attachments || []) {
       const li = ul.createEl("li", { cls: "kan-btn-row" });
-      const name = a.originalFilename || a.s3Key;
-      if (a.url) li.createEl("a", { text: "📎 " + name, href: a.url });
-      else li.createSpan({ text: "📎 " + name });
+      const name = sanitizeFilename(a.originalFilename || a.s3Key || "attachment");
+      if (a.url) {
+        try {
+          const href = assertSafeExternalUrl(a.url, "attachment link");
+          const link = li.createEl("a", { text: "📎 " + name });
+          link.href = href;
+          link.setAttribute("rel", "noopener noreferrer");
+          link.setAttribute("target", "_blank");
+        } catch (e) {
+          li.createSpan({ text: "📎 " + name });
+        }
+      } else li.createSpan({ text: "📎 " + name });
       if (a.url) {
         li.createEl("button", { text: "Save" }).onclick = async () => {
           try {
@@ -1108,7 +1220,8 @@ class KanBoardView extends ItemView {
       for (const l of board.labels || []) {
         const on = this.filterLabelIds.includes(l.publicId);
         const b = chipRow.createEl("button", { cls: "kan-label" + (on ? " is-on" : ""), text: l.name });
-        if (l.colourCode) b.style.background = l.colourCode + "33";
+        const chipColor = sanitizeCssColor(l.colourCode);
+        if (chipColor) b.style.background = chipColor + "33";
         b.onclick = async () => {
           if (on) this.filterLabelIds = this.filterLabelIds.filter((id) => id !== l.publicId);
           else this.filterLabelIds.push(l.publicId);
@@ -1214,7 +1327,8 @@ class KanBoardView extends ItemView {
             const lbls = c.createDiv({ cls: "kan-card-labels" });
             for (const l of card.labels) {
               const span = lbls.createSpan({ cls: "kan-label", text: l.name });
-              if (l.colourCode) span.style.background = l.colourCode + "33";
+              const cardColor = sanitizeCssColor(l.colourCode);
+              if (cardColor) span.style.background = cardColor + "33";
             }
           }
         }
@@ -1554,7 +1668,11 @@ class KanSyncPlugin extends Plugin {
     this.clearAutoSync();
   }
 
-  async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    try { this.settings.baseUrl = normalizeApiBaseUrl(this.settings.baseUrl); }
+    catch (e) { this.settings.baseUrl = DEFAULT_SETTINGS.baseUrl; }
+  }
   async saveSettings() {
     await this.saveData(this.settings);
     this.scheduleAutoSync();
@@ -1867,7 +1985,7 @@ class KanSyncPlugin extends Plugin {
       try {
         new Notice(`Uploading "${file.name}"…`);
         const data = await file.arrayBuffer();
-        await this.attachDataToCard(cardId, file.name, file.type || "application/octet-stream", data);
+        await this.attachDataToCard(cardId, sanitizeFilename(file.name), sanitizeContentType(file.type || "application/octet-stream"), data);
         new Notice(`Attached "${file.name}".`);
       } catch (e) { new Notice("Kan error: " + e.message, 8000); console.error(e); }
     };
@@ -1880,17 +1998,18 @@ class KanSyncPlugin extends Plugin {
     try {
       const content = await this.app.vault.read(file);
       const data = new TextEncoder().encode(content).buffer;
-      await this.attachDataToCard(cardId, file.name, "text/markdown", data);
+      await this.attachDataToCard(cardId, sanitizeFilename(file.name), "text/markdown", data);
       new Notice(`Attached note "${file.name}" to card.`);
     } catch (e) { new Notice("Kan error: " + e.message, 8000); console.error(e); }
   }
 
   async saveAttachmentToVault(attachment) {
-    const name = attachment.originalFilename || attachment.filename || attachment.s3Key || "attachment.bin";
-    const url = attachment.url;
-    if (!url) throw new Error("Attachment has no download URL.");
+    const name = sanitizeFilename(attachment.originalFilename || attachment.filename || attachment.s3Key || "attachment.bin");
+    const url = assertSafeExternalUrl(attachment.url, "attachment download URL");
     const res = await requestUrl({ url, method: "GET", throw: false });
     if (res.status >= 400) throw new Error(`Download failed (${res.status})`);
+    const data = res.arrayBuffer;
+    if (!data || data.byteLength > MAX_ATTACHMENT) throw new Error("Attachment exceeds the 50 MB limit.");
     const folder = "Kan Sync Attachments";
     if (!(await this.app.vault.adapter.exists(folder))) await this.app.vault.createFolder(folder);
     let path = `${folder}/${name}`;
@@ -1901,7 +2020,6 @@ class KanSyncPlugin extends Plugin {
       path = `${folder}/${parts.join(".")}-${n}${ext}`;
       n++;
     }
-    const data = res.arrayBuffer;
     await this.app.vault.createBinary(path, data);
     return path;
   }
@@ -2256,8 +2374,10 @@ class KanSyncPlugin extends Plugin {
       const rows = [];
       for (const l of board.lists || []) {
         const cards = l.cards || [];
-        const titles = this.settings.includeTitlesInStatus ? cards.map((c) => c.title).join("; ").slice(0, 300) : "—";
-        rows.push(`| ${l.name} | ${cards.length} | ${titles} |`);
+        const titles = this.settings.includeTitlesInStatus
+          ? cards.map((c) => escapeMdCell(c.title)).join("; ").slice(0, 300)
+          : "—";
+        rows.push(`| ${escapeMdCell(l.name)} | ${cards.length} | ${titles} |`);
         for (const c of cards) cardsById[c.publicId] = c;
         if (doneNames.includes(l.name.toLowerCase()))
           for (const c of cards) { doneTitles.add(normTitle(c.title)); doneIds.add(c.publicId); }
@@ -2307,7 +2427,7 @@ class KanSyncPlugin extends Plugin {
       const now = new Date().toISOString().slice(0, 16).replace("T", " ");
       const section = [
         heading, "",
-        `> Synced from Kan board **${board.name}** at ${now}`, "",
+        `> Synced from Kan board **${escapeMdCell(board.name).replace(/\*/g, "")}** at ${now}`, "",
         "| List | Cards | Titles |", "|------|-------|--------|",
         ...rows, "",
       ].join("\n");
@@ -2365,7 +2485,15 @@ class KanSettingTab extends PluginSettingTab {
       .addText((t) =>
         t.setPlaceholder(DEFAULT_SETTINGS.baseUrl)
           .setValue(this.plugin.settings.baseUrl)
-          .onChange(async (v) => { this.plugin.settings.baseUrl = v.trim() || DEFAULT_SETTINGS.baseUrl; await this.plugin.saveSettings(); })
+          .onChange(async (v) => {
+            try {
+              this.plugin.settings.baseUrl = normalizeApiBaseUrl(v.trim() || DEFAULT_SETTINGS.baseUrl);
+            } catch (e) {
+              new Notice(e.message, 6000);
+              return;
+            }
+            await this.plugin.saveSettings();
+          })
       );
 
     new Setting(containerEl)
@@ -2615,7 +2743,7 @@ class KanSettingTab extends PluginSettingTab {
         ], async (v) => {
           const patch = {};
           if (v.name) patch.name = v.name;
-          if (v.image) patch.image = v.image.trim();
+          if (v.image) patch.image = assertSafeExternalUrl(v.image.trim(), "image URL");
           await p.client.updateUser(patch);
           new Notice("Profile updated.");
         }).open();
@@ -2889,7 +3017,9 @@ class KanSettingTab extends PluginSettingTab {
           { key: "events", label: "Events (comma-separated)", value: WEBHOOK_EVENTS.join(",") },
         ], async (v) => {
           const events = v.events.split(",").map((s) => s.trim()).filter(Boolean);
-          await p.client.createWebhook(ws(), { name: v.name, url: v.url, secret: v.secret || undefined, events });
+          const body = { name: v.name, url: assertSafeExternalUrl(v.url, "webhook URL"), events };
+          if (v.secret) body.secret = v.secret;
+          await p.client.createWebhook(ws(), body);
           new Notice("Webhook created.");
         }).open();
       }));
@@ -2906,10 +3036,10 @@ class KanSettingTab extends PluginSettingTab {
         ], async (v) => {
           const patch = {
             name: v.name || undefined,
-            url: v.url || undefined,
             active: v.active,
             events: v.events.split(",").map((s) => s.trim()).filter(Boolean),
           };
+          if (v.url) patch.url = assertSafeExternalUrl(v.url, "webhook URL");
           if (v.secret) patch.secret = v.secret;
           await p.client.updateWebhook(ws(), v.id.trim(), patch);
           new Notice("Webhook updated.");
@@ -2951,7 +3081,7 @@ class KanSettingTab extends PluginSettingTab {
         ], async (v) => {
           const res = await p.client.getIntegrationAuthorizeUrl(v.provider);
           const url = res.url || res.authorizationUrl || res;
-          if (typeof url === "string") window.open(url);
+          if (typeof url === "string") openSafeExternalUrl(url);
           else { console.log(res); new Notice("Authorize URL logged to console."); }
         }).open();
       }))
@@ -2989,7 +3119,7 @@ class KanSettingTab extends PluginSettingTab {
           { key: "name", label: "Name", value: "" },
           { key: "colourCode", label: "Colour (#hex)", value: "#3498db" },
         ], async (v) => {
-          await p.client.updateLabel(v.id.trim(), { name: v.name, colourCode: v.colourCode });
+          await p.client.updateLabel(v.id.trim(), { name: v.name, colourCode: sanitizeCssColor(v.colourCode) || "#3498db" });
           new Notice("Label updated.");
         }).open();
       }))

@@ -4,7 +4,7 @@
 
 [Kan.bn](https://kan.bn) is the open-source alternative to Trello. This plugin turns any Obsidian note with checkboxes into a live kanban board and keeps the two in sync — without ever duplicating your board data locally.
 
-![Version](https://img.shields.io/badge/version-0.7.3-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-0.7.4-blue) ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0%2B-purple) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -333,11 +333,11 @@ No payment is required for this plugin. Kan.bn or your self-hosted host may have
 
 All remote HTTP uses Obsidian’s `requestUrl()` API (three call sites in `main.js`):
 
-1. **Kan REST API** — `GET`/`POST`/`PUT`/`PATCH`/`DELETE` to your configured **Base URL** (default `https://kan.bn/api/v1`) with your API key in the `Authorization` header. Used for boards, lists, cards, labels, members, search, comments, checklists, webhooks admin, imports, etc.
-2. **Presigned attachment upload** — `PUT` of file bytes to a short-lived URL returned by Kan (typically S3-compatible object storage). The upload request does **not** include your API key.
-3. **Attachment download** — `GET` of an attachment URL when saving an attachment into the vault from the card modal.
+1. **Kan REST API** — `GET`/`POST`/`PUT`/`PATCH`/`DELETE` to your configured **Base URL** (default `https://kan.bn/api/v1`) with your API key in the `Authorization` header. Used for boards, lists, cards, labels, members, search, comments, checklists, webhooks admin, imports, etc. Base URL must be `https://` (or `http://localhost` for local self-host). Path IDs are URL-encoded; credentials in the Base URL are rejected.
+2. **Presigned attachment upload** — `PUT` of file bytes to a short-lived **https** URL returned by Kan (typically S3-compatible object storage). The upload request does **not** include your API key. Non-https schemes are rejected.
+3. **Attachment download** — `GET` of an attachment **https** URL when saving into the vault. Filenames are sanitized (no path traversal); downloads are capped at 50 MB.
 
-No other remote hosts are contacted by default. Changing **Base URL** (self-hosted) redirects all Kan API traffic to that host. Optional **Open authorization URL** for Trello/GitHub import opens a browser tab to the URL Kan returns (user-initiated).
+No other remote hosts are contacted by default. Changing **Base URL** (self-hosted) redirects all Kan API traffic to that host. Optional **Open authorization URL** for Trello/GitHub import opens a browser tab only for validated `https://` URLs returned by Kan.
 
 Optional **auto-sync pull** (off by default) schedules a silent pull for the active note when `kan_board` frontmatter is set. It uses a one-shot timer only while the interval setting is &gt; 0 — not a permanent background poller.
 
@@ -441,10 +441,14 @@ Errors also go to the developer console (`Ctrl/Cmd + Shift + I`).
 - [x] Slug resolve, named checklists, subtask rename/reorder, label colour sync, admin command wiring — v0.7.1
 - [x] Scorecard disclosures / CONTRIBUTING / auto-sync timer hygiene — v0.7.2
 - [x] Card order on push, optional pull descriptions, admin field fill-ins — v0.7.3
+- [x] Security hardening (URL allowlists, path encoding, filename/CSS sanitization) — v0.7.4
 
 New ideas welcome via GitHub issues.
 
 ## Changelog
+
+### 0.7.4
+- **Security** — validate Base URL / external URLs (https only, block `javascript:`/`data:`/credentials); encode path IDs; sanitize attachment filenames (path traversal); validate CSS colours; escape Markdown table cells; redact Bearer tokens in error text; safe `window.open` for OAuth; webhook/image URL checks
 
 ### 0.7.3
 - **Card order on push** — sets each card’s `index` to match checklist order within its list
